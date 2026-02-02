@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyTorch models and training outputs
+model_LSTM_*/
+*.pth
+*.pt
+
+# Data files (NetCDF, etc.)
+fresh_data/
+*.nc
+*.nc4
+*.hdf5
+
+# Plots and outputs
+plots/
+*.png
+*.jpg
+*.pdf
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Architecture search results
+architecture_search/
+
+# Logs
+*.log
