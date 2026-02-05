@@ -98,12 +98,17 @@ Input → Dropout → LSTM[0] → ... → LSTM[N] → Dropout → Linear → Out
 - Batch-first processing for efficiency
 - MSE loss with masked computation for variable lengths
 
-## Author
-
-Bruno Buongiorno Nardelli (adapted to PyTorch)  
+## Authors
+### Original code:
+Bruno Buongiorno Nardelli  
 Consiglio Nazionale delle Ricerche  
 Istituto di Scienze Marine  
 Napoli, Italia
+
+### Translation to pytorch and padding implementation:
+Nicolas Werner Pelletier
+Institut de Ciències del Mar (ICM-CSIC)
+Barcelona, Spain
 
 ## License
 
