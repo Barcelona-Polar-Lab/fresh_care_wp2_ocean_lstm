@@ -40,9 +40,9 @@ class Config:
     """Configuration class for easy parameter adjustment"""
     
     # File paths
-    TRAIN_FILE = 'fresh_data/50m_data_for_LSTM_filled_with_SH_train63.nc'
-    DEV_FILE = 'fresh_data/50m_data_for_LSTM_filled_with_SH_dev21.nc'
-    TEST_FILE = 'fresh_data/50m_data_for_LSTM_filled_with_SH_test16.nc'
+    TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_train63.nc'
+    DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_dev21.nc'
+    TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_test16.nc'
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
     # Model architecture
@@ -93,57 +93,127 @@ class OceanLSTM(nn.Module):
     
     def __init__(self, input_size, output_size, lstm_units, dropout_rate=0.2):
         super(OceanLSTM, self).__init__()
+
+        """
+        input_size: type(int)
+        
+            number of input features. eg:
+            A batch with 7 of them might look like:
+            batch_X.shape = [16, 50, 7]
+                             |   |    ─ 7 features at each depth
+                             |    ────  50 depth levels (sequence)
+                              ───────── 16 profiles (batch)
+
+            So each element in a sequence has 7 features
+
+        output_size: type(int)
+        
+            same principle, a label/prediction might
+            have the shape [50, 3]
+                            |   output features at each depth
+                            depth levels
+
+        lstm_units: type(list of int or just an int)
+            number of LSTM units in each layer. 
+            
+             eg: lstm_units=35 means 35 units in a single layer
+                 lstm_units=[50, 30] means 50 units in the first layer and 30 in the second layer
+
+         dropout_rate: type(float)
+            dropout rate for regularization (default: 0.2)
+        """
         
         self.input_size = input_size
         self.output_size = output_size
         self.lstm_units = lstm_units if isinstance(lstm_units, list) else [lstm_units]
-        
+
         # Input dropout
         self.input_dropout = nn.Dropout(dropout_rate)
         
         # LSTM layers
-        self.lstm_layers = nn.ModuleList()
+        self.lstm_layers = nn.ModuleList() # modules list allows tracking params
+                                           # for multiple layers in a clean way
         layer_input_size = input_size
         
         for i, units in enumerate(self.lstm_units):
             self.lstm_layers.append(
                 nn.LSTM(
-                    input_size=layer_input_size,
-                    hidden_size=units,
+                    input_size=layer_input_size, # input size of the layer
+                    hidden_size=units, # num of LSTM units: output size of the layer
                     batch_first=True,
                     dropout=dropout_rate if i < len(self.lstm_units) - 1 else 0
+                    # dropout only between layers, not on the last layer's output
+                    # we set that below on the output layer
                 )
             )
             layer_input_size = units
         
-        # Output layer (applied to each time step)
-        self.output_layer = nn.Linear(self.lstm_units[-1], output_size)
+        # Output layer (applied to each time/depth step)
+        self.output_layer = nn.Linear(
+            self.lstm_units[-1], # last LSTM layer's output size
+            output_size # number of output features (e.g., 3 for SH, T, S)
+        )
         self.output_dropout = nn.Dropout(dropout_rate)
-        
+    
+
     def forward(self, x, lengths=None):
+        """
+        Forward pass with two supported input modes:
+        
+        MODE 1: Fixed-length sequences (no padding)
+            - x: Regular tensor [batch, max_seq_len, features]
+            - lengths: None
+            - All sequences must have the same length with NO padding values
+            - LSTM processes all positions directly
+            
+        MODE 2: Variable-length sequences (with packing)
+            - x: Regular tensor [batch, max_seq_len, features] OR PackedSequence
+            - lengths: Tensor of actual sequence lengths
+            - Data will be packed to skip padding during LSTM processing
+            - This prevents padding contamination in LSTM states
+            
+        IMPORTANT: Do NOT pass padded tensors without lengths parameter.
+        This would cause padding values to contaminate LSTM hidden states.
+        """
         # Handle both packed and regular sequences
         if isinstance(x, torch.nn.utils.rnn.PackedSequence):
-            # Input is already packed
+            # Input is already packed, unpack for dropout, then repack
             packed_input = x
-            x, batch_sizes = torch.nn.utils.rnn.pad_packed_sequence(packed_input, batch_first=True)
+            x, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_input, batch_first=True)
             # Apply input dropout
             x = self.input_dropout(x)
             # Repack for LSTM processing
             x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
         else:
-            # Regular tensor input
+            # Regular tensor input, apply dropout directly
             x = self.input_dropout(x)
-            if lengths is not None:
+
+            if lengths is not None: # In case of fixed-length sequences
+                                    # lengths can be None and we skip packing
+                
                 # Pack the sequence for variable lengths
                 x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
-        
+            
+        # All below can handle packed or regular sequences, 
+        # LSTM layers natively accept both packed and regular tensors.
+
+        # In the case we have a regular tensor and no lengths and some padding, this
+        # will just process it as is without packing sending padding values through
+        # the LSTM, wich is BAD.
+
+
         # LSTM layers
         for lstm in self.lstm_layers:
             x, _ = lstm(x)
         
-        # Unpack for output processing
+        # Unpack if needed for final layer processing
         if isinstance(x, torch.nn.utils.rnn.PackedSequence):
             x, _ = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+
+        # QUESTION FOR MARIO: applying the output linear layer (Wx+b) to a zero
+        # padded sequence, this is not affecting the the computation thanks
+        # to the mask we apply during loss calculation, right? I don't really
+        # undersand why... 
             
         # Output dropout and projection
         x = self.output_dropout(x)
@@ -251,11 +321,17 @@ def run_training():
     # Normalize data (exclude test from statistics to prevent data leakage)
     train_data, dev_data, test_data, norm_params = normalize_data(train_data, dev_data, test_data)
     
-    # Get data dimensions
-    n_input_vars = train_data['X'].shape[2]
-    n_output_vars = train_data['y'].shape[2]
+    # Get data dimensions (handle both list and array formats)
+    if isinstance(train_data['X'], list):
+        n_input_vars = train_data['X'][0].shape[1]  # For variable-length sequences
+        n_output_vars = train_data['y'][0].shape[1]
+        n_profiles = len(train_data['X'])
+    else:
+        n_input_vars = train_data['X'].shape[2]  # For fixed-length sequences
+        n_output_vars = train_data['y'].shape[2]
+        n_profiles = train_data['X'].shape[0]
     
-    print(f"Training profiles: {train_data['X'].shape[0]}")
+    print(f"Training profiles: {n_profiles}")
     print(f"Input variables: {n_input_vars} - {train_data['input_names']}")
     print(f"Output variables: {n_output_vars}")
     
@@ -332,7 +408,7 @@ def run_testing():
     
     # Load trained model
     print("Loading trained model...")
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     model_config = checkpoint['model_architecture']
     norm_params = checkpoint['norm_params']
@@ -365,7 +441,11 @@ def run_testing():
         test_data['X_norm'] = (test_data['X'] - norm_params['X_min']) / norm_params['X_range']
         test_data['y_norm'] = (test_data['y'] - norm_params['y_min']) / norm_params['y_range']
     
-    print(f"Test data: {test_data['X'].shape[0]} profiles, {test_data['X'].shape[1]} depths")
+    # Print test data info (handle both list and array formats)
+    if test_data.get('has_bathymetry', False):
+        print(f"Test data: {len(test_data['X'])} profiles with variable depths")
+    else:
+        print(f"Test data: {test_data['X'].shape[0]} profiles, {test_data['X'].shape[1]} depths")
     
     # Make predictions
     y_pred = make_predictions(model, test_data, norm_params, device)
@@ -530,6 +610,42 @@ def train_model(model, train_loader, val_loader, device):
 
 def create_data_loaders(train_data, dev_data, batch_size=16):
     """Create PyTorch data loaders for training and validation with support for variable-length sequences"""
+    
+    # Validate data based on sequence type
+    if not train_data.get('has_bathymetry', False):
+        # Fixed-length sequences: validate no padding values present
+        print("Validating fixed-length data (checking for padding values)...")
+        
+        # Check for common padding values: NaN, -999, -99
+        for data_dict, name in [(train_data, 'training'), (dev_data, 'validation')]:
+            X_norm = data_dict['X_norm']
+            y_norm = data_dict['y_norm']
+            
+            # Check for NaN
+            if np.any(np.isnan(X_norm)) or np.any(np.isnan(y_norm)):
+                raise ValueError(
+                    f"ERROR: Found NaN values in {name} data with fixed-length sequences.\n"
+                    f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
+                    f"Use variable-length mode (has_bathymetry=True) if data contains NaN padding."
+                )
+            
+            # Check for -999 padding value
+            if np.any(X_norm == -999.0) or np.any(y_norm == -999.0):
+                raise ValueError(
+                    f"ERROR: Found -999 padding values in {name} data with fixed-length sequences.\n"
+                    f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
+                    f"Use variable-length mode (has_bathymetry=True) if data contains padding."
+                )
+            
+            # Check for -99 padding value
+            if np.any(X_norm == -99.0) or np.any(y_norm == -99.0):
+                raise ValueError(
+                    f"ERROR: Found -99 padding values in {name} data with fixed-length sequences.\n"
+                    f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
+                    f"Use variable-length mode (has_bathymetry=True) if data contains padding."
+                )
+        
+        print("  ✓ No padding values detected - data is valid for fixed-length mode")
     
     if train_data.get('has_bathymetry', False):
         # Variable-length sequences: need custom dataset and collate function
@@ -1010,9 +1126,11 @@ def create_results_dataset(test_data, y_pred, error_stats):
     if test_data['augmentation']['PSAL_aug_fraction'] is not None:
         ds_results['PSAL_aug_fraction'] = (['profile'], test_data['augmentation']['PSAL_aug_fraction'])
     if test_data['augmentation']['TEMP_augs'] is not None:
-        ds_results['TEMP_augs'] = (['profile'], test_data['augmentation']['TEMP_augs'])
+        temp_augs = test_data['augmentation']['TEMP_augs'][:, :len(depth_array)]
+        ds_results['TEMP_augs'] = (['profile', 'depth'], temp_augs)
     if test_data['augmentation']['PSAL_augs'] is not None:
-        ds_results['PSAL_augs'] = (['profile'], test_data['augmentation']['PSAL_augs'])
+        psal_augs = test_data['augmentation']['PSAL_augs'][:, :len(depth_array)]
+        ds_results['PSAL_augs'] = (['profile', 'depth'], psal_augs)
     
     # Add TIME coordinate if available
     if metadata['time'] is not None:
@@ -1112,7 +1230,11 @@ def create_results_dataset(test_data, y_pred, error_stats):
     if 'Y_EASE' in ds_results:    
         ds_results['Y_EASE'].attrs = {'long_name': 'EASE Grid Y Coordinate', 'units': 'm'}
     if 'TIME' in ds_results:
-        ds_results['TIME'].attrs = {'long_name': 'Profile Time', 'units': 'days since 1950-01-01'}
+        # Copy original TIME attributes from source dataset
+        if metadata.get('time_attrs'):
+            ds_results['TIME'].attrs = metadata['time_attrs']
+        else:
+            ds_results['TIME'].attrs = {'long_name': 'Profile Time'}
     if 'day_of_year' in ds_results:
         ds_results['day_of_year'].attrs = {'long_name': 'Day of Year', 'units': 'days'}
     
@@ -1179,10 +1301,10 @@ def load_datasets():
             raise FileNotFoundError(f"{name} dataset file not found: {file_path}")
     
     try:
-        # Load datasets
-        ds_train = xr.open_dataset(Config.TRAIN_FILE)
-        ds_dev = xr.open_dataset(Config.DEV_FILE)
-        ds_test = xr.open_dataset(Config.TEST_FILE)
+        # Load datasets (decode_times=False to preserve time encoding)
+        ds_train = xr.open_dataset(Config.TRAIN_FILE, decode_times=False)
+        ds_dev = xr.open_dataset(Config.DEV_FILE, decode_times=False)
+        ds_test = xr.open_dataset(Config.TEST_FILE, decode_times=False)
     except Exception as e:
         raise RuntimeError(f"Error loading dataset files: {e}")
     
@@ -1344,6 +1466,7 @@ def prepare_dataset(ds, dataset_type):
                 'y_ease': ds['Y_EASE'].values,
                 'day_of_year': day_of_year,
                 'time': ds['TIME'].values,
+                'time_attrs': dict(ds['TIME'].attrs) if 'TIME' in ds else {},
                 'depth': ds['depth'].values
             }
         }
@@ -1380,6 +1503,7 @@ def prepare_dataset(ds, dataset_type):
                 'y_ease': ds['Y_EASE'].values,
                 'day_of_year': day_of_year,
                 'time': ds['TIME'].values,
+                'time_attrs': dict(ds['TIME'].attrs) if 'TIME' in ds else {},
                 'depth': ds['depth'].values
             }
         }
