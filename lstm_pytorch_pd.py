@@ -72,7 +72,7 @@ class Config:
         'seasonal_sin': True   # Sine of seasonal cycle
     }
     
-    # Output variables
+    # Output variables (this is just informative!)
     OUTPUT_VARS = ['steric_height', 'temperature', 'salinity']
     
     @staticmethod
@@ -1236,7 +1236,7 @@ def create_results_dataset(test_data, y_pred, error_stats):
         else:
             ds_results['TIME'].attrs = {'long_name': 'Profile Time'}
     if 'day_of_year' in ds_results:
-        ds_results['day_of_year'].attrs = {'long_name': 'Day of Year', 'units': 'days'}
+        ds_results['day_of_year'].attrs = {'long_name': 'Day of Year'}
     
     return ds_results
 
@@ -1364,7 +1364,7 @@ def prepare_dataset(ds, dataset_type):
     n_depth = sst_anomaly.shape[1]
     
     # Seasonal cycle
-    day_of_year = ds['day_of_year'].values
+    day_of_year = ds['day_of_year'].values.astype('int32')
     seasonal_cos = np.cos(2 * np.pi * (day_of_year / 365) + 1)
     seasonal_sin = np.sin(2 * np.pi * (day_of_year / 365) + 1)
     
