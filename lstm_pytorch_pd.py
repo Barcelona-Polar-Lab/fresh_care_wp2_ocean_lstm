@@ -43,6 +43,7 @@ class Config:
     TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_train63.nc'
     DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_dev21.nc'
     TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_test16.nc'
+    MODEL_PARENT_DIR = 'models_arch_search'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
     # Model architecture
@@ -58,6 +59,9 @@ class Config:
     # Early stopping parameters
     PATIENCE = 5
     MIN_DELTA = 1e-6
+    
+    # Testing parameters
+    TEST_REAL_DATA_ONLY = True  # Compute errors only on real (non-augmented) data points
     
     # Input variables configuration (easy to modify)
     INPUT_VARS = {
@@ -79,7 +83,7 @@ class Config:
     def get_model_dir(lstm_units):
         """Get MODEL_DIR based on LSTM units"""
         units_str = '_'.join(map(str, lstm_units))
-        return f'model_LSTM_{units_str}'
+        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}'
 
 # ============================================================================
 # NEURAL NETWORK MODEL
@@ -243,6 +247,8 @@ def main():
                        help='Dropout rate for regularization')
     parser.add_argument('--patience', type=int, default=None,
                        help='Early stopping patience (number of epochs)')
+    parser.add_argument('--test_real_data_only', type=bool, default=None,
+                       help='Compute RMSE only on real (non-augmented) data points')
      
     args = parser.parse_args()    # Override config if command line arguments provided
     if args.lstm_units:
@@ -257,6 +263,8 @@ def main():
         Config.DROPOUT_RATE = args.dropout_rate
     if args.patience:
         Config.PATIENCE = args.patience
+    if args.test_real_data_only is not None:
+        Config.TEST_REAL_DATA_ONLY = args.test_real_data_only
     
     print(f"Configuration: LSTM={Config.LSTM_UNITS}, Batch={Config.BATCH_SIZE}, Max Epochs={Config.MAX_EPOCHS}")
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")
@@ -458,6 +466,7 @@ def run_testing():
     print(f"Steric Height: {error_stats['rmse_total'][0]:.3f} cm")
     print(f"Temperature: {error_stats['rmse_total'][1]:.3f} °C")
     print(f"Salinity: {error_stats['rmse_total'][2]:.3f} PSU")
+    print(f"Sum of RMSEs: {error_stats['rmse_sum']:.3f}")
     
     # Create comprehensive results dataset
     ds_results = create_results_dataset(test_data, y_pred, error_stats)
@@ -808,12 +817,31 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
     
     print("Computing error statistics...")
     
+    # Create mask for real (non-augmented) data if requested
+    real_data_mask = None
+    if (Config.TEST_REAL_DATA_ONLY and 
+        test_data and 
+        test_data['augmentation']['TEMP_augs'] is not None and 
+        test_data['augmentation']['PSAL_augs'] is not None):
+        # Mask: True where data is real (augs == 0 for both T and S)
+        temp_real = (test_data['augmentation']['TEMP_augs'] == 0)
+        psal_real = (test_data['augmentation']['PSAL_augs'] == 0)
+        real_data_mask = temp_real & psal_real
+        
+        n_real = np.sum(real_data_mask)
+        n_total = real_data_mask.size
+        print(f"Testing on real data only: {n_real}/{n_total} depth points ({100*n_real/n_total:.1f}%)")
+    
     if test_data and test_data.get('has_bathymetry', False):
         # Variable-length sequences: need to handle different lengths
         lengths = test_data['lengths']
         max_length = max(lengths)
         n_profiles = len(y_pred)
         n_outputs = y_pred[0].shape[1]
+        
+        # Truncate real_data_mask to max_length if it exists
+        if real_data_mask is not None:
+            real_data_mask = real_data_mask[:, :max_length]
         
         # Pad predictions and observations to consistent shape for analysis
         y_pred_padded = np.full((n_profiles, max_length, n_outputs), np.nan)
@@ -833,13 +861,29 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
         rmse_profiles = np.full((n_profiles, n_outputs), np.nan)
         for i, length in enumerate(lengths):
             valid_errors = errors[i, :length, :]
-            rmse_profiles[i, :] = np.sqrt(np.mean(valid_errors**2, axis=0))
+            
+            # Apply real data mask if provided
+            if real_data_mask is not None:
+                # Get mask for this profile's valid depths
+                profile_real_mask = real_data_mask[i, :length]
+                if np.any(profile_real_mask):
+                    # Only compute RMSE on real data points
+                    valid_errors = valid_errors[profile_real_mask]
+                    rmse_profiles[i, :] = np.sqrt(np.mean(valid_errors**2, axis=0))
+                # else: leave as NaN if no real data in this profile
+            else:
+                rmse_profiles[i, :] = np.sqrt(np.mean(valid_errors**2, axis=0))
         
         # RMSE by depth (average over profiles at each depth, only where data exists)
         rmse_depths = np.full((max_length, n_outputs), np.nan)
         for d in range(max_length):
             # Find profiles that have data at this depth
             valid_mask = ~np.isnan(errors[:, d, :])
+            
+            # Apply real data mask if provided
+            if real_data_mask is not None:
+                valid_mask = valid_mask & real_data_mask[:, d:d+1]  # Broadcast depth dimension
+            
             for out_idx in range(n_outputs):
                 valid_errors_at_depth = errors[:, d, out_idx][valid_mask[:, out_idx]]
                 if len(valid_errors_at_depth) > 0:
@@ -847,6 +891,13 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
         
         # Overall RMSE (using all valid points)
         valid_mask = ~np.isnan(errors)
+        
+        # Apply real data mask if provided
+        if real_data_mask is not None:
+            # Broadcast real_data_mask to match errors shape [profiles, depth, outputs]
+            real_mask_3d = np.repeat(real_data_mask[:, :, np.newaxis], n_outputs, axis=2)
+            valid_mask = valid_mask & real_mask_3d
+        
         rmse_total = np.full(n_outputs, np.nan)
         for out_idx in range(n_outputs):
             valid_errors = errors[:, :, out_idx][valid_mask[:, :, out_idx]]
@@ -876,14 +927,28 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
             
         errors = y_pred - y_true
         
-        # RMSE by profile (average over depth for each profile)
-        rmse_profiles = np.sqrt(np.mean(errors**2, axis=1))
-        
-        # RMSE by depth (average over profiles for each depth) 
-        rmse_depths = np.sqrt(np.mean(errors**2, axis=0))
-        
-        # Overall RMSE
-        rmse_total = np.sqrt(np.mean(errors**2, axis=(0,1)))
+        # Apply real data mask if provided
+        if real_data_mask is not None:
+            # Mask out augmented data points
+            errors_masked = np.ma.masked_where(~real_data_mask[:, :, np.newaxis], errors)
+            
+            # RMSE by profile (average over depth for each profile, only real data)
+            rmse_profiles = np.sqrt(np.mean(errors_masked**2, axis=1))
+            
+            # RMSE by depth (average over profiles for each depth, only real data)
+            rmse_depths = np.sqrt(np.mean(errors_masked**2, axis=0))
+            
+            # Overall RMSE (only real data)
+            rmse_total = np.sqrt(np.mean(errors_masked**2, axis=(0,1)))
+        else:
+            # RMSE by profile (average over depth for each profile)
+            rmse_profiles = np.sqrt(np.mean(errors**2, axis=1))
+            
+            # RMSE by depth (average over profiles for each depth) 
+            rmse_depths = np.sqrt(np.mean(errors**2, axis=0))
+            
+            # Overall RMSE
+            rmse_total = np.sqrt(np.mean(errors**2, axis=(0,1)))
         
         # Sum of all total RMSEs
         rmse_sum = np.sum(rmse_total)
