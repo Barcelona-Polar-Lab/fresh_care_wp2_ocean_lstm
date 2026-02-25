@@ -47,14 +47,14 @@ class Config:
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
     # Model architecture
-    LSTM_UNITS = [35, 35]  # Can be changed to any list of integers
+    LSTM_UNITS = [40, 40]  # Can be changed to any list of integers
     DROPOUT_RATE = 0.2
     ACTIVATION = 'tanh'
     
     # Training parameters
     BATCH_SIZE = 16
     MAX_EPOCHS = 500
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0001
     
     # Early stopping parameters
     PATIENCE = 5
@@ -62,6 +62,9 @@ class Config:
     
     # Testing parameters
     TEST_REAL_DATA_ONLY = True  # Compute errors only on real (non-augmented) data points
+    
+    # Surface data source
+    SURFACE_TS = 'satellite'  # 'satellite' for SST/SSS or 'glorys' for SST_glorys/SSS_glorys
     
     # Input variables configuration (easy to modify)
     INPUT_VARS = {
@@ -205,7 +208,6 @@ class OceanLSTM(nn.Module):
         # will just process it as is without packing sending padding values through
         # the LSTM, wich is BAD.
 
-
         # LSTM layers
         for lstm in self.lstm_layers:
             x, _ = lstm(x)
@@ -217,8 +219,8 @@ class OceanLSTM(nn.Module):
         # QUESTION FOR MARIO: applying the output linear layer (Wx+b) to a zero
         # padded sequence, this is not affecting the the computation thanks
         # to the mask we apply during loss calculation, right? I don't really
-        # undersand why... 
-            
+        # understand why...
+        
         # Output dropout and projection
         x = self.output_dropout(x)
         x = self.output_layer(x)
@@ -249,6 +251,8 @@ def main():
                        help='Early stopping patience (number of epochs)')
     parser.add_argument('--test_real_data_only', type=bool, default=None,
                        help='Compute RMSE only on real (non-augmented) data points')
+    parser.add_argument('--surface_ts', choices=['satellite', 'glorys'], default=None,
+                       help='Surface T/S data source: satellite (SST/SSS) or glorys (SST_glorys/SSS_glorys)')
      
     args = parser.parse_args()    # Override config if command line arguments provided
     if args.lstm_units:
@@ -265,9 +269,12 @@ def main():
         Config.PATIENCE = args.patience
     if args.test_real_data_only is not None:
         Config.TEST_REAL_DATA_ONLY = args.test_real_data_only
+    if args.surface_ts:
+        Config.SURFACE_TS = args.surface_ts
     
     print(f"Configuration: LSTM={Config.LSTM_UNITS}, Batch={Config.BATCH_SIZE}, Max Epochs={Config.MAX_EPOCHS}")
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")
+    print(f"Surface T/S source: {Config.SURFACE_TS}")
     
     # Set model directory
     Config.MODEL_DIR = Config.get_model_dir(Config.LSTM_UNITS)
@@ -378,7 +385,8 @@ def run_training():
         'PATIENCE': Config.PATIENCE,
         'MIN_DELTA': Config.MIN_DELTA,
         'INPUT_VARS': Config.INPUT_VARS,
-        'OUTPUT_VARS': Config.OUTPUT_VARS
+        'OUTPUT_VARS': Config.OUTPUT_VARS,
+        'SURFACE_TS': Config.SURFACE_TS
     }
     
     torch.save({
@@ -1406,13 +1414,23 @@ def prepare_dataset(ds, dataset_type):
     S_glorys = ds['S_glorys'].values  
     SH_glorys = ds['SH_glorys'].values
     
+    # Surface data selection (satellite or GLORYS)
+    if Config.SURFACE_TS == 'satellite':
+        sst_surface = ds['SST'].values
+        sss_surface = ds['SSS'].values
+    elif Config.SURFACE_TS == 'glorys':
+        sst_surface = ds['SST_glorys'].values
+        sss_surface = ds['SSS_glorys'].values
+    else:
+        raise ValueError(f"Invalid SURFACE_TS value: {Config.SURFACE_TS}. Must be 'satellite' or 'glorys'")
+    
     # Surface data (anomalies from surface climatology)
     sst_anomaly = np.repeat(
-        ds['SST'].values[:, np.newaxis], T_glorys.shape[1], axis=1
+        sst_surface[:, np.newaxis], T_glorys.shape[1], axis=1
     ) - np.repeat(T_glorys[:,0][:, np.newaxis], T_glorys.shape[1], axis=1)
     
     sss_anomaly = np.repeat(
-        ds['SSS'].values[:, np.newaxis], S_glorys.shape[1], axis=1  
+        sss_surface[:, np.newaxis], S_glorys.shape[1], axis=1  
     ) - np.repeat(S_glorys[:,0][:, np.newaxis], S_glorys.shape[1], axis=1)
     
     adt_anomaly = np.repeat(
