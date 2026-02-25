@@ -40,9 +40,9 @@ class Config:
     """Configuration class for easy parameter adjustment"""
     
     # File paths
-    TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_train63.nc'
-    DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_dev21.nc'
-    TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_test16.nc'
+    TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_train63.nc'
+    DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_dev21.nc'
+    TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_test16.nc'
     MODEL_PARENT_DIR = 'models_surface_comparison'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
