@@ -43,7 +43,7 @@ class Config:
     TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_train63.nc'
     DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_dev21.nc'
     TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_with_glorys_test16.nc'
-    MODEL_PARENT_DIR = 'models_arch_search'  # Parent directory for models
+    MODEL_PARENT_DIR = 'models_surface_comparison'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
     # Model architecture
@@ -322,7 +322,7 @@ def run_training():
         print("No GPU found, using CPU.")
     
     # Create model directory
-    Path(Config.MODEL_DIR).mkdir(exist_ok=True)
+    Path(Config.MODEL_DIR).mkdir(parents=True, exist_ok=True)
     
     # Load datasets
     ds_train, ds_dev, ds_test = load_datasets()
