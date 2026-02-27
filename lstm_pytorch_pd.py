@@ -31,6 +31,7 @@ import warnings
 import argparse
 import time
 warnings.filterwarnings("ignore")
+from tqdm import tqdm
 
 # ============================================================================
 # CONFIGURATION
@@ -84,9 +85,10 @@ class Config:
     
     @staticmethod
     def get_model_dir(lstm_units):
-        """Get MODEL_DIR based on LSTM units"""
+        """Get MODEL_DIR based on LSTM units and surface T/S source"""
         units_str = '_'.join(map(str, lstm_units))
-        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}'
+        surface_suffix = '_sat' if Config.SURFACE_TS == 'satellite' else '_glor'
+        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}{surface_suffix}'
 
 # ============================================================================
 # NEURAL NETWORK MODEL
@@ -528,7 +530,7 @@ def train_model(model, train_loader, val_loader, device):
         model.train()
         train_loss = 0.0
         
-        for batch_data in train_loader:
+        for batch_data in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
             if len(batch_data) == 3:  # Variable-length sequences
                 batch_X, batch_y, lengths = batch_data
                 batch_X, batch_y, lengths = batch_X.to(device), batch_y.to(device), lengths.to(device)

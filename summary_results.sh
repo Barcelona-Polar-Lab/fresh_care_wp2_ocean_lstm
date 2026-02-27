@@ -8,7 +8,7 @@ echo "================================================================="
 echo ""
 
 # Find all model directories matching the pattern and sort them
-for dir in $(find models_arch_search -maxdepth 1 -type d -name "model_LSTM_*_*" | sort); do
+for dir in $(find models_surface_comparison -maxdepth 1 -type d -name "model_LSTM_*_*" | sort); do
     # Get directory name
     dir_name=$(basename "$dir")
     
