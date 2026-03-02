@@ -105,8 +105,9 @@ class OceanLSTM(nn.Module):
     """
     
     def __init__(self, input_size, output_size, lstm_units, dropout_rate=0.2):
-        super(OceanLSTM, self).__init__()
 
+        super(OceanLSTM, self).__init__()
+        
         """
         input_size: type(int)
         
