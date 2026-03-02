@@ -107,7 +107,7 @@ class OceanLSTM(nn.Module):
     def __init__(self, input_size, output_size, lstm_units, dropout_rate=0.2):
 
         super(OceanLSTM, self).__init__()
-        
+
         """
         input_size: type(int)
         
@@ -262,6 +262,7 @@ def main():
                        help='Surface T/S data source: satellite (SST/SSS) or glorys (SST_glorys/SSS_glorys)')
      
     args = parser.parse_args()    # Override config if command line arguments provided
+
     if args.lstm_units:
         Config.LSTM_UNITS = args.lstm_units
     if args.batch_size:
@@ -306,7 +307,7 @@ def check_model_directory():
             if response in ['y', 'yes']:
                 print("Proceeding with overwrite...")
                 return True
-            elif response in ['n', 'no', '']:
+            elif response in ['n', 'no']:
                 print("Aborting to avoid overwriting existing model.")
                 return False
             else:
@@ -320,6 +321,8 @@ def run_training():
     print("=== TRAINING MODE ===")
     
     # Setup
+    # cuda for NVIDIA GPUs, cuda:0 for first GPU, etc.
+    # mps for Apple Silicon GPUs, xla for TPUs (if supported)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -344,12 +347,15 @@ def run_training():
     train_data, dev_data, test_data, norm_params = normalize_data(train_data, dev_data, test_data)
     
     # Get data dimensions (handle both list and array formats)
+    # For variable-length sequences
     if isinstance(train_data['X'], list):
-        n_input_vars = train_data['X'][0].shape[1]  # For variable-length sequences
+        n_input_vars = train_data['X'][0].shape[1]
         n_output_vars = train_data['y'][0].shape[1]
         n_profiles = len(train_data['X'])
+
+    # For fixed-length sequences
     else:
-        n_input_vars = train_data['X'].shape[2]  # For fixed-length sequences
+        n_input_vars = train_data['X'].shape[2]
         n_output_vars = train_data['y'].shape[2]
         n_profiles = train_data['X'].shape[0]
     
@@ -370,13 +376,13 @@ def run_training():
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Create data loaders
-    train_loader, val_loader = create_data_loaders(train_data, dev_data, batch_size=Config.BATCH_SIZE)
+    train_loader, dev_loader = create_data_loaders(train_data, dev_data, batch_size=Config.BATCH_SIZE)
     
     # Train model
-    model, train_losses, val_losses, stopped_epoch = train_model(model, train_loader, val_loader, device)
+    model, train_losses, dev_losses, stopped_epoch = train_model(model, train_loader, dev_loader, device)
     
     # Plot training history
-    plot_training_history(train_losses, val_losses, stopped_epoch)
+    plot_training_history(train_losses, dev_losses, stopped_epoch)
     
     # Save final model and metadata
     config_dict = {
@@ -409,8 +415,8 @@ def run_training():
     }, Path(Config.MODEL_DIR) / 'model.pth')
     
     print(f"\nTraining completed!")
-    if len(val_losses) > 0:
-        print(f"Best validation loss: {min(val_losses):.6f}")
+    if len(dev_losses) > 0:
+        print(f"Best development loss: {min(dev_losses):.6f}")
         print(f"Final training loss: {train_losses[-1]:.6f}")
     else:
         print(f"Final training loss: {train_losses[-1]:.6f}")
@@ -501,8 +507,8 @@ def run_testing():
 # TRAINING FUNCTIONS  
 # ============================================================================
 
-def train_model(model, train_loader, val_loader, device):
-    """Train the LSTM model with early stopping using validation set"""
+def train_model(model, train_loader, dev_loader, device):
+    """Train the LSTM model with early stopping using development set"""
     
     print(f"Training model on {device}...")
     if torch.cuda.is_available():
@@ -514,11 +520,11 @@ def train_model(model, train_loader, val_loader, device):
     
     # History tracking
     train_losses = []
-    val_losses = []
+    dev_losses = []
     epoch_times = []
     
     # Early stopping variables
-    best_val_loss = float('inf')
+    best_dev_loss = float('inf')
     patience_counter = 0
     best_model_state = None
     stopped_epoch = Config.MAX_EPOCHS
@@ -566,12 +572,12 @@ def train_model(model, train_loader, val_loader, device):
         train_loss /= len(train_loader)
         train_losses.append(train_loss)
         
-        # Validation phase
+        # Development phase
         model.eval()
-        val_loss = 0.0
+        dev_loss = 0.0
         
         with torch.no_grad():
-            for batch_data in val_loader:
+            for batch_data in dev_loader:
                 if len(batch_data) == 3:  # Variable-length sequences
                     batch_X, batch_y, lengths = batch_data
                     batch_X, batch_y, lengths = batch_X.to(device), batch_y.to(device), lengths.to(device)
@@ -591,17 +597,17 @@ def train_model(model, train_loader, val_loader, device):
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
                 
-                val_loss += loss.item()
+                dev_loss += loss.item()
         
-        val_loss /= len(val_loader)
-        val_losses.append(val_loss)
+        dev_loss /= len(dev_loader)
+        dev_losses.append(dev_loss)
         
         # Early stopping check
-        if val_loss < best_val_loss - Config.MIN_DELTA:
-            best_val_loss = val_loss
+        if dev_loss < best_dev_loss - Config.MIN_DELTA:
+            best_dev_loss = dev_loss
             patience_counter = 0
             best_model_state = model.state_dict().copy()
-            print(f"  → New best validation loss: {val_loss:.6f}")
+            print(f"  → New best development loss: {dev_loss:.6f}")
         else:
             patience_counter += 1
             
@@ -616,7 +622,7 @@ def train_model(model, train_loader, val_loader, device):
         
         gpu_mem = f" | GPU: {torch.cuda.memory_allocated()/1e6:.0f}MB" if torch.cuda.is_available() else ""
         print(f'Epoch {epoch+1} completed - Train Loss: {train_loss:.6f} | '
-              f'Val Loss: {val_loss:.6f} | Patience: {patience_counter}/{Config.PATIENCE} | '
+              f'Dev Loss: {dev_loss:.6f} | Patience: {patience_counter}/{Config.PATIENCE} | '
               f'Time: {epoch_time:.1f}s | Max ETA: {estimated_remaining/60:.1f}min{gpu_mem}')
         
         # Check for early stopping
@@ -628,12 +634,12 @@ def train_model(model, train_loader, val_loader, device):
     # Load best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
-        print(f"Loaded best model with validation loss: {best_val_loss:.6f}")
+        print(f"Loaded best model with development loss: {best_dev_loss:.6f}")
     
-    return model, train_losses, val_losses, stopped_epoch
+    return model, train_losses, dev_losses, stopped_epoch
 
 def create_data_loaders(train_data, dev_data, batch_size=16):
-    """Create PyTorch data loaders for training and validation with support for variable-length sequences"""
+    """Create PyTorch data loaders for training and development with support for variable-length sequences"""
     
     # Validate data based on sequence type
     if not train_data.get('has_bathymetry', False):
@@ -641,7 +647,7 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
         print("Validating fixed-length data (checking for padding values)...")
         
         # Check for common padding values: NaN, -999, -99
-        for data_dict, name in [(train_data, 'training'), (dev_data, 'validation')]:
+        for data_dict, name in [(train_data, 'training'), (dev_data, 'development')]:
             X_norm = data_dict['X_norm']
             y_norm = data_dict['y_norm']
             
@@ -705,11 +711,11 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
         
         # Create datasets
         train_dataset = VariableLengthDataset(train_data['X_norm'], train_data['y_norm'], train_data['lengths'])
-        val_dataset = VariableLengthDataset(dev_data['X_norm'], dev_data['y_norm'], dev_data['lengths'])
+        dev_dataset = VariableLengthDataset(dev_data['X_norm'], dev_data['y_norm'], dev_data['lengths'])
         
         # Create data loaders with custom collate function
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_variable_length)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_variable_length)
+        dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_variable_length)
         
     else:
         # Fixed-length sequences (original behavior)
@@ -718,21 +724,21 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
         train_dataset = TensorDataset(X_train, y_train)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         
-        X_val = torch.FloatTensor(dev_data['X_norm'])
-        y_val = torch.FloatTensor(dev_data['y_norm'])
-        val_dataset = TensorDataset(X_val, y_val)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        X_dev = torch.FloatTensor(dev_data['X_norm'])
+        y_dev = torch.FloatTensor(dev_data['y_norm'])
+        dev_dataset = TensorDataset(X_dev, y_dev)
+        dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False)
     
-    return train_loader, val_loader
+    return train_loader, dev_loader
 
-def plot_training_history(train_losses, val_losses, stopped_epoch):
-    """Plot training and validation losses with early stopping marker"""
+def plot_training_history(train_losses, dev_losses, stopped_epoch):
+    """Plot training and development losses with early stopping marker"""
     
     plt.figure(figsize=(12, 6))
     epochs = range(1, len(train_losses) + 1)
     
     plt.plot(epochs, train_losses, label='Training Loss', color='blue')
-    plt.plot(epochs, val_losses, label='Validation Loss', color='red')
+    plt.plot(epochs, dev_losses, label='Development Loss', color='red')
     
     # Mark early stopping point
     if stopped_epoch < len(train_losses) and len(train_losses) > 0:
