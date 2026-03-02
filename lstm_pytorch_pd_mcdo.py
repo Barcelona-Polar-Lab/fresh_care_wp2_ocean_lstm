@@ -344,7 +344,7 @@ def run_training():
     test_data = prepare_dataset(ds_test, 'test')  # Keep for final evaluation only
     
     # Normalize data (exclude test from statistics to prevent data leakage)
-    train_data, dev_data, test_data, norm_params = normalize_data(train_data, dev_data, test_data)
+    train_data, dev_data, test_data, norm_params = datasets_normalization(train_data, dev_data, test_data)
     
     # Get data dimensions (handle both list and array formats)
     # For variable-length sequences
@@ -461,17 +461,11 @@ def run_testing():
     test_data = prepare_dataset(ds_test, 'test')
     
     # Apply same normalization as training
-    if test_data.get('has_bathymetry', False):
-        # Variable-length sequences
-        test_data['X_norm'] = [(X - norm_params['X_min']) / norm_params['X_range'] for X in test_data['X']]
-        test_data['y_norm'] = [(y - norm_params['y_min']) / norm_params['y_range'] for y in test_data['y']]
-    else:
-        # Fixed-length sequences
-        test_data['X_norm'] = (test_data['X'] - norm_params['X_min']) / norm_params['X_range']
-        test_data['y_norm'] = (test_data['y'] - norm_params['y_min']) / norm_params['y_range']
+    test_data = normalize_data(test_data, norm_params['X_mean'], norm_params['X_std'], 
+                               norm_params['y_mean'], norm_params['y_std'])
     
     # Print test data info (handle both list and array formats)
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         print(f"Test data: {len(test_data['X'])} profiles with variable depths")
     else:
         print(f"Test data: {test_data['X'].shape[0]} profiles, {test_data['X'].shape[1]} depths")
@@ -642,7 +636,7 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
     """Create PyTorch data loaders for training and development with support for variable-length sequences"""
     
     # Validate data based on sequence type
-    if not train_data.get('has_bathymetry', False):
+    if not train_data.get('variable_lengths', False):
         # Fixed-length sequences: validate no padding values present
         print("Validating fixed-length data (checking for padding values)...")
         
@@ -656,7 +650,7 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
                 raise ValueError(
                     f"ERROR: Found NaN values in {name} data with fixed-length sequences.\n"
                     f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
-                    f"Use variable-length mode (has_bathymetry=True) if data contains NaN padding."
+                    f"Use variable-length mode (variable_lengths=True) if data contains NaN padding."
                 )
             
             # Check for -999 padding value
@@ -664,7 +658,7 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
                 raise ValueError(
                     f"ERROR: Found -999 padding values in {name} data with fixed-length sequences.\n"
                     f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
-                    f"Use variable-length mode (has_bathymetry=True) if data contains padding."
+                    f"Use variable-length mode (variable_lengths=True) if data contains padding."
                 )
             
             # Check for -99 padding value
@@ -672,12 +666,12 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
                 raise ValueError(
                     f"ERROR: Found -99 padding values in {name} data with fixed-length sequences.\n"
                     f"Fixed-length mode requires all sequences to be fully filled with NO padding.\n"
-                    f"Use variable-length mode (has_bathymetry=True) if data contains padding."
+                    f"Use variable-length mode (variable_lengths=True) if data contains padding."
                 )
         
         print("  ✓ No padding values detected - data is valid for fixed-length mode")
     
-    if train_data.get('has_bathymetry', False):
+    if train_data.get('variable_lengths', False):
         # Variable-length sequences: need custom dataset and collate function
         from torch.nn.utils.rnn import pad_sequence
         
@@ -770,7 +764,7 @@ def make_predictions(model, test_data, norm_params, device):
     # Store all MC samples for uncertainty estimation
     all_mc_predictions = []  # Will store N sets of predictions
     
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         # Variable-length sequences: process individually or in small batches
         print("Processing variable-length sequences...")
         
@@ -808,7 +802,7 @@ def make_predictions(model, test_data, norm_params, device):
                         predictions.append(y_pred_batch[i, :length, :])
             
             # Denormalize predictions (each profile separately)
-            y_pred_denorm = [(pred * norm_params['y_range'] + norm_params['y_min']) for pred in predictions]
+            y_pred_denorm = denormalize_data(predictions, norm_params['y_mean'], norm_params['y_std'], variable_lengths=True)
             all_mc_predictions.append(y_pred_denorm)
         
         # Compute statistics across MC samples for variable-length sequences
@@ -870,7 +864,7 @@ def make_predictions(model, test_data, norm_params, device):
                     predictions.append(y_pred_batch)
             
             y_pred_norm = np.concatenate(predictions, axis=0)
-            y_pred_denorm = y_pred_norm * norm_params['y_range'] + norm_params['y_min']
+            y_pred_denorm = denormalize_data(y_pred_norm, norm_params['y_mean'], norm_params['y_std'], variable_lengths=False)
             all_mc_predictions.append(y_pred_denorm)
         
         # Stack all MC samples: [N_MC, n_profiles, n_depths, n_outputs]
@@ -908,7 +902,7 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
         n_total = real_data_mask.size
         print(f"Testing on real data only: {n_real}/{n_total} depth points ({100*n_real/n_total:.1f}%)")
     
-    if test_data and test_data.get('has_bathymetry', False):
+    if test_data and test_data.get('variable_lengths', False):
         # Variable-length sequences: need to handle different lengths
         lengths = test_data['lengths']
         max_length = max(lengths)
@@ -1044,7 +1038,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     print("Creating results dataset...")
     
     # Handle variable vs fixed length data
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         # Variable-length sequences: need to pad to consistent shape
         lengths = test_data['lengths']
         max_length = max(lengths)
@@ -1133,7 +1127,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     S_pred = S_pred_anom + S_glorys_padded
     
     # Observed full profiles (pad if needed)
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         T_obs_full = test_data['full_profiles']['T']
         S_obs_full = test_data['full_profiles']['S']
         SH_obs_full = test_data['full_profiles']['SH']
@@ -1166,7 +1160,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     SH_glorys_errors = SH_glorys_padded - SH_obs
     
     # Compute climatology RMSE (handle NaN values for variable lengths)
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         # For variable lengths, compute RMSE only over valid depths
         T_glorys_rmse_prof = np.full(n_profiles, np.nan)
         S_glorys_rmse_prof = np.full(n_profiles, np.nan)
@@ -1317,7 +1311,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         ds_results['TIME'] = (['profile'], metadata['time'])
     
     # Add bathymetry information if available
-    if test_data.get('has_bathymetry', False):
+    if test_data.get('variable_lengths', False):
         ds_results['max_depth_idx'] = (['profile'], test_data['max_depth_idx'])
         ds_results['profile_lengths'] = (['profile'], lengths)
         ds_results['max_depth_idx'].attrs = {'long_name': 'Maximum depth index for each profile', 'units': '1'}
@@ -1643,7 +1637,7 @@ def prepare_dataset(ds, dataset_type):
             'y': y_list,  # List of variable-length sequences
             'lengths': lengths,  # Sequence lengths for pack_padded_sequence
             'input_names': input_names,
-            'has_bathymetry': True,
+            'variable_lengths': True,
             'max_depth_idx': max_depth_idx,
             'last_valid_idx': last_valid_idx,
             'climatology': {
@@ -1682,7 +1676,7 @@ def prepare_dataset(ds, dataset_type):
             'X': X,
             'y': y,
             'input_names': input_names,
-            'has_bathymetry': False,
+            'variable_lengths': False,
             'climatology': {
                 'T_glorys': T_glorys,
                 'S_glorys': S_glorys,
@@ -1711,13 +1705,58 @@ def prepare_dataset(ds, dataset_type):
             }
         }
 
-def normalize_data(train_data, dev_data, test_data):
-    """Normalize input and output data using combined train+dev statistics (excluding test to prevent data leakage)"""
+def normalize_data(data, X_mean, X_std, y_mean, y_std):
+    """
+    Apply z-score normalization to a dataset.
     
-    print("Normalizing data...")
+    Args:
+        data: Dictionary containing 'X' and 'y' arrays or lists
+        X_mean, X_std: Mean and std for input features
+        y_mean, y_std: Mean and std for output features
+    
+    Returns:
+        Modified data dictionary with 'X_norm' and 'y_norm' added
+    """
+    if data.get('variable_lengths', False):
+        # Variable-length sequences
+        data['X_norm'] = [(X - X_mean) / X_std for X in data['X']]
+        data['y_norm'] = [(y - y_mean) / y_std for y in data['y']]
+    else:
+        # Fixed-length sequences
+        data['X_norm'] = (data['X'] - X_mean) / X_std
+        data['y_norm'] = (data['y'] - y_mean) / y_std
+    
+    return data
+
+def denormalize_data(data_norm, mean, std, variable_lengths=False):
+    """
+    Reverse z-score normalization.
+    
+    Args:
+        data_norm: Normalized data (array or list of arrays)
+        mean, std: Normalization parameters
+        variable_lengths: Whether data is list of variable-length sequences
+    
+    Returns:
+        Denormalized data in original scale
+    """
+    if variable_lengths:
+        # Variable-length sequences (list of arrays)
+        return [pred * std + mean for pred in data_norm]
+    else:
+        # Fixed-length sequences (single array)
+        return data_norm * std + mean
+
+def datasets_normalization(train_data, dev_data, test_data):
+    """
+    Compute z-score normalization parameters from train+dev data,
+    then apply to all three datasets (excluding test from statistics to prevent data leakage).
+    """
+    
+    print("Normalizing data with z-score standardization...")
     
     # Handle both variable-length lists and fixed arrays
-    if train_data.get('has_bathymetry', False):
+    if train_data.get('variable_lengths', False):
         # Variable-length sequences: concatenate all profiles from train+dev only
         X_all_profiles = []
         y_all_profiles = []
@@ -1731,55 +1770,36 @@ def normalize_data(train_data, dev_data, test_data):
         X_combined = np.concatenate(X_all_profiles, axis=0)  # [total_depth_points, n_features]
         y_combined = np.concatenate(y_all_profiles, axis=0)  # [total_depth_points, n_outputs]
         
-        # Compute statistics
-        X_min = X_combined.min(axis=0)  # [n_features]
-        X_max = X_combined.max(axis=0)  # [n_features]
-        y_min = y_combined.min(axis=0)  # [n_outputs]
-        y_max = y_combined.max(axis=0)  # [n_outputs]
+        # Compute z-score statistics
+        X_mean = X_combined.mean(axis=0)  # [n_features]
+        X_std = X_combined.std(axis=0)    # [n_features]
+        y_mean = y_combined.mean(axis=0)  # [n_outputs]
+        y_std = y_combined.std(axis=0)    # [n_outputs]
         
     else:
         # Fixed-length sequences (original behavior) - only train+dev for stats
         X_combined = np.concatenate([train_data['X'], dev_data['X']], axis=0)
-        X_min = X_combined.min(axis=(0,1))
-        X_max = X_combined.max(axis=(0,1))
+        X_mean = X_combined.mean(axis=(0,1))
+        X_std = X_combined.std(axis=(0,1))
         
         y_combined = np.concatenate([train_data['y'], dev_data['y']], axis=0)
-        y_min = y_combined.min(axis=(0,1))
-        y_max = y_combined.max(axis=(0,1))
+        y_mean = y_combined.mean(axis=(0,1))
+        y_std = y_combined.std(axis=(0,1))
     
-    X_range = X_max - X_min
-    X_range[X_range == 0] = 1  # Avoid division by zero
-    
-    y_range = y_max - y_min
-    y_range[y_range == 0] = 1  # Avoid division by zero
-    
-    # Normalize all three datasets
-    if train_data.get('has_bathymetry', False):
-        # Normalize variable-length sequences
-        train_data['X_norm'] = [(X - X_min) / X_range for X in train_data['X']]
-        train_data['y_norm'] = [(y - y_min) / y_range for y in train_data['y']]
-        
-        dev_data['X_norm'] = [(X - X_min) / X_range for X in dev_data['X']]
-        dev_data['y_norm'] = [(y - y_min) / y_range for y in dev_data['y']]
-        
-        test_data['X_norm'] = [(X - X_min) / X_range for X in test_data['X']]
-        test_data['y_norm'] = [(y - y_min) / y_range for y in test_data['y']]
-    else:
-        # Normalize fixed-length sequences
-        train_data['X_norm'] = (train_data['X'] - X_min) / X_range
-        train_data['y_norm'] = (train_data['y'] - y_min) / y_range
-        
-        dev_data['X_norm'] = (dev_data['X'] - X_min) / X_range  
-        dev_data['y_norm'] = (dev_data['y'] - y_min) / y_range
-        
-        test_data['X_norm'] = (test_data['X'] - X_min) / X_range
-        test_data['y_norm'] = (test_data['y'] - y_min) / y_range
+    # Avoid division by zero (set std to 1 if it's 0)
+    X_std[X_std == 0] = 1
+    y_std[y_std == 0] = 1
     
     # Store normalization parameters
     norm_params = {
-        'X_min': X_min, 'X_max': X_max, 'X_range': X_range,
-        'y_min': y_min, 'y_max': y_max, 'y_range': y_range
+        'X_mean': X_mean, 'X_std': X_std,
+        'y_mean': y_mean, 'y_std': y_std
     }
+    
+    # Apply normalization to all three datasets
+    train_data = normalize_data(train_data, X_mean, X_std, y_mean, y_std)
+    dev_data = normalize_data(dev_data, X_mean, X_std, y_mean, y_std)
+    test_data = normalize_data(test_data, X_mean, X_std, y_mean, y_std)
     
     return train_data, dev_data, test_data, norm_params
 
