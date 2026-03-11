@@ -2,18 +2,21 @@
 
 # Script to extract and display RMSE values from all LSTM model directories
 
+# Set numeric locale to C to ensure decimal point formatting
+export LC_NUMERIC=C
+
 echo "================================================================="
 echo "LSTM Model Results Summary - RMSE Values"
 echo "================================================================="
 echo ""
 
 # Find all model directories matching the pattern and sort them
-for dir in $(find models_surface_comparison -maxdepth 1 -type d -name "model_LSTM_*_*" | sort); do
+for dir in $(find /data/FRESH-CARE/data_for_LSTM/models -maxdepth 1 -type d -name "model_LSTM_*_*" | sort); do
     # Get directory name
     dir_name=$(basename "$dir")
     
     # Check if test_results.nc exists
-    results_file="${dir}/test_results.nc"
+    results_file="${dir}/mc_test_results.nc"
     
     if [ -f "$results_file" ]; then
         # Extract RMSE values using ncdump
@@ -34,7 +37,7 @@ for dir in $(find models_surface_comparison -maxdepth 1 -type d -name "model_LST
             printf "%-20s  Could not extract RMSE values\n" "$dir_name"
         fi
     else
-        printf "%-20s  test_results.nc not found\n" "$dir_name"
+        printf "%-20s  mc_test_results.nc not found\n" "$dir_name"
     fi
 done
 

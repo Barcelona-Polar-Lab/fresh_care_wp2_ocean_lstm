@@ -41,10 +41,10 @@ class Config:
     """Configuration class for easy parameter adjustment"""
     
     # File paths
-    TRAIN_FILE = '/data/FRESH-CARE/data_for_LSTM/fresh_data/var_depths_data_for_LSTM_B_wg_train63.nc'
-    DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/fresh_data/var_depths_data_for_LSTM_B_wg_dev21.nc'
-    TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/fresh_data/var_depths_data_for_LSTM_B_wg_test16.nc'
-    MODEL_PARENT_DIR = '/data/FRESH-CARE/data_for_LSTM/models'  # Parent directory for models
+    TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_train63.nc'
+    DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_dev21.nc'
+    TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_test16.nc'
+    MODEL_PARENT_DIR = 'model_LSTM_40_40_sat_znorm'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units
     
     # Model architecture
@@ -162,12 +162,15 @@ class OceanLSTM(nn.Module):
             )
             layer_input_size = units
         
+        # Output dropout
+        self.output_dropout = nn.Dropout(dropout_rate)
+
         # Output layer (applied to each time/depth step)
         self.output_layer = nn.Linear(
             self.lstm_units[-1], # last LSTM layer's output size
             output_size # number of output features (e.g., 3 for SH, T, S)
         )
-        self.output_dropout = nn.Dropout(dropout_rate)
+        
     
 
     def forward(self, x, lengths=None):
@@ -196,8 +199,8 @@ class OceanLSTM(nn.Module):
             x, lengths = torch.nn.utils.rnn.pad_packed_sequence(packed_input, batch_first=True)
             # Apply input dropout
             x = self.input_dropout(x)
-            # Repack for LSTM processing
-            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+            # Repack for LSTM processing (lengths must be on CPU)
+            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
         else:
             # Regular tensor input, apply dropout directly
             x = self.input_dropout(x)
@@ -205,8 +208,8 @@ class OceanLSTM(nn.Module):
             if lengths is not None: # In case of fixed-length sequences
                                     # lengths can be None and we skip packing
                 
-                # Pack the sequence for variable lengths
-                x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths, batch_first=True, enforce_sorted=False)
+                # Pack the sequence for variable lengths (lengths must be on CPU)
+                x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths.cpu(), batch_first=True, enforce_sorted=False)
             
         # All below can handle packed or regular sequences, 
         # LSTM layers natively accept both packed and regular tensors.
@@ -260,6 +263,8 @@ def main():
                        help='Compute RMSE only on real (non-augmented) data points')
     parser.add_argument('--surface_ts', choices=['satellite', 'glorys'], default=None,
                        help='Surface T/S data source: satellite (SST/SSS) or glorys (SST_glorys/SSS_glorys)')
+    parser.add_argument('--model_dir', type=str, default=None,
+                       help='Custom model directory path (for testing existing models). If not provided, will be auto-generated from LSTM units and surface T/S source')
      
     args = parser.parse_args()    # Override config if command line arguments provided
 
@@ -285,8 +290,12 @@ def main():
     print(f"Surface T/S source: {Config.SURFACE_TS}")
     
     # Set model directory
-    Config.MODEL_DIR = Config.get_model_dir(Config.LSTM_UNITS)
-    print(f"Model directory: {Config.MODEL_DIR}")
+    if args.model_dir:
+        Config.MODEL_DIR = args.model_dir
+        print(f"Model directory (custom): {Config.MODEL_DIR}")
+    else:
+        Config.MODEL_DIR = Config.get_model_dir(Config.LSTM_UNITS)
+        print(f"Model directory (auto-generated): {Config.MODEL_DIR}")
     
     # Run based on mode
     if args.mode in ['train', 'both']:
@@ -1186,6 +1195,62 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         S_glorys_rmse_depth = np.sqrt(np.mean(S_glorys_errors**2, axis=0))
         SH_glorys_rmse_depth = np.sqrt(np.mean(SH_glorys_errors**2, axis=0))
     
+    # Compute averaged uncertainties (mean of std deviations)
+    if y_uncertainty is not None:
+        if test_data.get('variable_lengths', False):
+            # For variable lengths, average only over valid depths
+            T_uncertainty_prof = np.full(n_profiles, np.nan)
+            S_uncertainty_prof = np.full(n_profiles, np.nan)
+            SH_uncertainty_prof = np.full(n_profiles, np.nan)
+            
+            for i, length in enumerate(lengths):
+                T_uncertainty_prof[i] = np.nanmean(T_uncertainty[i, :length])
+                S_uncertainty_prof[i] = np.nanmean(S_uncertainty[i, :length])
+                SH_uncertainty_prof[i] = np.nanmean(SH_uncertainty[i, :length])
+            
+            # Average over profiles (ignoring NaN)
+            T_uncertainty_depth = np.nanmean(T_uncertainty, axis=0)
+            S_uncertainty_depth = np.nanmean(S_uncertainty, axis=0)
+            SH_uncertainty_depth = np.nanmean(SH_uncertainty, axis=0)
+            
+        else:
+            # Fixed lengths
+            T_uncertainty_prof = np.mean(T_uncertainty, axis=1)
+            S_uncertainty_prof = np.mean(S_uncertainty, axis=1)
+            SH_uncertainty_prof = np.mean(SH_uncertainty, axis=1)
+            
+            T_uncertainty_depth = np.mean(T_uncertainty, axis=0)
+            S_uncertainty_depth = np.mean(S_uncertainty, axis=0)
+            SH_uncertainty_depth = np.mean(SH_uncertainty, axis=0)
+    else:
+        # No uncertainties available
+        T_uncertainty_prof = None
+        S_uncertainty_prof = None
+        SH_uncertainty_prof = None
+        T_uncertainty_depth = None
+        S_uncertainty_depth = None
+        SH_uncertainty_depth = None
+    
+    # Compute confidence interval margins (difference from mean prediction in anomaly space)
+    # These can be added/subtracted from predictions to get CI bounds
+    if y_ci_lower is not None and y_ci_upper is not None:
+        # Lower margin = mean - ci_lower (amount to subtract from mean)
+        T_ci_lower_margin = T_pred_anom - T_ci_lower
+        S_ci_lower_margin = S_pred_anom - S_ci_lower
+        SH_ci_lower_margin = SH_pred_anom - SH_ci_lower
+        
+        # Upper margin = ci_upper - mean (amount to add to mean)
+        T_ci_upper_margin = T_ci_upper - T_pred_anom
+        S_ci_upper_margin = S_ci_upper - S_pred_anom
+        SH_ci_upper_margin = SH_ci_upper - SH_pred_anom
+    else:
+        T_ci_lower_margin = None
+        S_ci_lower_margin = None
+        SH_ci_lower_margin = None
+        T_ci_upper_margin = None
+        S_ci_upper_margin = None
+        SH_ci_upper_margin = None
+    
     # Get metadata
     metadata = test_data['metadata']
     n_profiles = len(metadata['latitude'])
@@ -1226,13 +1291,22 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
             'S_uncertainty': (['profile', 'depth'], S_uncertainty if y_uncertainty is not None else np.full_like(S_pred, np.nan)),
             'SH_uncertainty': (['profile', 'depth'], SH_uncertainty if y_uncertainty is not None else np.full_like(SH_pred, np.nan)),
             
-            # 95% Confidence intervals
-            'T_ci_lower95': (['profile', 'depth'], T_ci_lower if y_ci_lower is not None else np.full_like(T_pred, np.nan)),
-            'T_ci_upper95': (['profile', 'depth'], T_ci_upper if y_ci_upper is not None else np.full_like(T_pred, np.nan)),
-            'S_ci_lower95': (['profile', 'depth'], S_ci_lower if y_ci_lower is not None else np.full_like(S_pred, np.nan)),
-            'S_ci_upper95': (['profile', 'depth'], S_ci_upper if y_ci_upper is not None else np.full_like(S_pred, np.nan)),
-            'SH_ci_lower95': (['profile', 'depth'], SH_ci_lower if y_ci_lower is not None else np.full_like(SH_pred, np.nan)),
-            'SH_ci_upper95': (['profile', 'depth'], SH_ci_upper if y_ci_upper is not None else np.full_like(SH_pred, np.nan)),
+            # 95% Confidence interval margins (to add/subtract from predictions)
+            'T_ci_lower_margin': (['profile', 'depth'], T_ci_lower_margin if T_ci_lower_margin is not None else np.full_like(T_pred, np.nan)),
+            'T_ci_upper_margin': (['profile', 'depth'], T_ci_upper_margin if T_ci_upper_margin is not None else np.full_like(T_pred, np.nan)),
+            'S_ci_lower_margin': (['profile', 'depth'], S_ci_lower_margin if S_ci_lower_margin is not None else np.full_like(S_pred, np.nan)),
+            'S_ci_upper_margin': (['profile', 'depth'], S_ci_upper_margin if S_ci_upper_margin is not None else np.full_like(S_pred, np.nan)),
+            'SH_ci_lower_margin': (['profile', 'depth'], SH_ci_lower_margin if SH_ci_lower_margin is not None else np.full_like(SH_pred, np.nan)),
+            'SH_ci_upper_margin': (['profile', 'depth'], SH_ci_upper_margin if SH_ci_upper_margin is not None else np.full_like(SH_pred, np.nan)),
+            
+            # Averaged uncertainties (mean std dev)
+            'T_uncertainty_profile': (['profile'], T_uncertainty_prof if T_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
+            'S_uncertainty_profile': (['profile'], S_uncertainty_prof if S_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
+            'SH_uncertainty_profile': (['profile'], SH_uncertainty_prof if SH_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
+            
+            'T_uncertainty_depth': (['depth'], T_uncertainty_depth if T_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
+            'S_uncertainty_depth': (['depth'], S_uncertainty_depth if S_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
+            'SH_uncertainty_depth': (['depth'], SH_uncertainty_depth if SH_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
             
             # ================== ERROR STATISTICS ==================
             # Error fields (predicted - observed anomalies)
@@ -1280,7 +1354,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         },
         attrs={
             'title': 'LSTM Model Test Results with Monte Carlo Dropout Uncertainty',
-            'description': 'Comprehensive results including climatology, anomalies, full profiles, error statistics, and MC Dropout uncertainty estimates',
+            'description': 'Comprehensive results including climatology, anomalies (MC Dropout mean predictions), full profiles, error statistics, and MC Dropout uncertainty estimates with confidence interval margins. All predictions are means over MC Dropout samples.',
             'model_architecture': f"LSTM {'-'.join(map(str, Config.LSTM_UNITS))}",
             'test_data_file': Config.TEST_FILE,
             'MC_dropout_samples': Config.N_MC_SAMPLES,
@@ -1329,9 +1403,9 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     ds_results['S_obs_anomaly'].attrs = {'long_name': 'Observed Salinity Anomaly (in-situ - climatology)', 'units': '1'}
     ds_results['SH_obs_anomaly'].attrs = {'long_name': 'Observed Steric Height Anomaly (in-situ - climatology)', 'units': 'm'}
     
-    ds_results['T_pred_anomaly'].attrs = {'long_name': 'Predicted Temperature Anomaly', 'units': 'degree_C'}
-    ds_results['S_pred_anomaly'].attrs = {'long_name': 'Predicted Salinity Anomaly', 'units': '1'}  
-    ds_results['SH_pred_anomaly'].attrs = {'long_name': 'Predicted Steric Height Anomaly', 'units': 'm'}
+    ds_results['T_pred_anomaly'].attrs = {'long_name': 'Predicted Temperature Anomaly (MC Dropout mean)', 'units': 'degree_C'}
+    ds_results['S_pred_anomaly'].attrs = {'long_name': 'Predicted Salinity Anomaly (MC Dropout mean)', 'units': '1'}  
+    ds_results['SH_pred_anomaly'].attrs = {'long_name': 'Predicted Steric Height Anomaly (MC Dropout mean)', 'units': 'm'}
     
     # Full profile attributes
     ds_results['T_obs_insitu'].attrs = {'long_name': 'Observed Temperature (in-situ)', 'units': 'degree_C'}
@@ -1347,26 +1421,35 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     ds_results['S_uncertainty'].attrs = {'long_name': 'Salinity Prediction Uncertainty (MC Dropout std)', 'units': '1'}
     ds_results['SH_uncertainty'].attrs = {'long_name': 'Steric Height Prediction Uncertainty (MC Dropout std)', 'units': 'm'}
     
-    # Confidence interval attributes
-    ds_results['T_ci_lower95'].attrs = {'long_name': 'Temperature 95% Confidence Interval Lower Bound', 'units': 'degree_C'}
-    ds_results['T_ci_upper95'].attrs = {'long_name': 'Temperature 95% Confidence Interval Upper Bound', 'units': 'degree_C'}
-    ds_results['S_ci_lower95'].attrs = {'long_name': 'Salinity 95% Confidence Interval Lower Bound', 'units': '1'}
-    ds_results['S_ci_upper95'].attrs = {'long_name': 'Salinity 95% Confidence Interval Upper Bound', 'units': '1'}
-    ds_results['SH_ci_lower95'].attrs = {'long_name': 'Steric Height 95% Confidence Interval Lower Bound', 'units': 'm'}
-    ds_results['SH_ci_upper95'].attrs = {'long_name': 'Steric Height 95% Confidence Interval Upper Bound', 'units': 'm'}
+    # Confidence interval margin attributes
+    ds_results['T_ci_lower_margin'].attrs = {'long_name': 'Temperature 95% CI Lower Margin (to subtract from prediction)', 'units': 'degree_C'}
+    ds_results['T_ci_upper_margin'].attrs = {'long_name': 'Temperature 95% CI Upper Margin (to add to prediction)', 'units': 'degree_C'}
+    ds_results['S_ci_lower_margin'].attrs = {'long_name': 'Salinity 95% CI Lower Margin (to subtract from prediction)', 'units': '1'}
+    ds_results['S_ci_upper_margin'].attrs = {'long_name': 'Salinity 95% CI Upper Margin (to add to prediction)', 'units': '1'}
+    ds_results['SH_ci_lower_margin'].attrs = {'long_name': 'Steric Height 95% CI Lower Margin (to subtract from prediction)', 'units': 'm'}
+    ds_results['SH_ci_upper_margin'].attrs = {'long_name': 'Steric Height 95% CI Upper Margin (to add to prediction)', 'units': 'm'}
+    
+    # Averaged uncertainty attributes
+    ds_results['T_uncertainty_profile'].attrs = {'long_name': 'Temperature Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': 'degree_C'}
+    ds_results['S_uncertainty_profile'].attrs = {'long_name': 'Salinity Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': '1'}
+    ds_results['SH_uncertainty_profile'].attrs = {'long_name': 'Steric Height Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': 'm'}
+    
+    ds_results['T_uncertainty_depth'].attrs = {'long_name': 'Temperature Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': 'degree_C'}
+    ds_results['S_uncertainty_depth'].attrs = {'long_name': 'Salinity Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': '1'}
+    ds_results['SH_uncertainty_depth'].attrs = {'long_name': 'Steric Height Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': 'm'}
     
     # Error attributes
-    ds_results['T_error'].attrs = {'long_name': 'Temperature Error (predicted - observed anomaly)', 'units': 'degree_C'}
-    ds_results['S_error'].attrs = {'long_name': 'Salinity Error (predicted - observed anomaly)', 'units': '1'}
-    ds_results['SH_error'].attrs = {'long_name': 'Steric Height Error (predicted - observed anomaly)', 'units': 'm'}
+    ds_results['T_error'].attrs = {'long_name': 'Temperature Error (MC Dropout mean prediction - observed anomaly)', 'units': 'degree_C'}
+    ds_results['S_error'].attrs = {'long_name': 'Salinity Error (MC Dropout mean prediction - observed anomaly)', 'units': '1'}
+    ds_results['SH_error'].attrs = {'long_name': 'Steric Height Error (MC Dropout mean prediction - observed anomaly)', 'units': 'm'}
     
-    ds_results['T_rmse_profile'].attrs = {'long_name': 'Temperature RMSE by profile', 'units': 'degree_C'}
-    ds_results['S_rmse_profile'].attrs = {'long_name': 'Salinity RMSE by profile', 'units': '1'}
-    ds_results['SH_rmse_profile'].attrs = {'long_name': 'Steric Height RMSE by profile', 'units': 'm'}
+    ds_results['T_rmse_profile'].attrs = {'long_name': 'Temperature RMSE by profile (MC Dropout mean vs observed)', 'units': 'degree_C'}
+    ds_results['S_rmse_profile'].attrs = {'long_name': 'Salinity RMSE by profile (MC Dropout mean vs observed)', 'units': '1'}
+    ds_results['SH_rmse_profile'].attrs = {'long_name': 'Steric Height RMSE by profile (MC Dropout mean vs observed)', 'units': 'm'}
     
-    ds_results['T_rmse_depth'].attrs = {'long_name': 'Temperature RMSE by depth', 'units': 'degree_C'}
-    ds_results['S_rmse_depth'].attrs = {'long_name': 'Salinity RMSE by depth', 'units': '1'}
-    ds_results['SH_rmse_depth'].attrs = {'long_name': 'Steric Height RMSE by depth', 'units': 'm'}
+    ds_results['T_rmse_depth'].attrs = {'long_name': 'Temperature RMSE by depth (MC Dropout mean vs observed)', 'units': 'degree_C'}
+    ds_results['S_rmse_depth'].attrs = {'long_name': 'Salinity RMSE by depth (MC Dropout mean vs observed)', 'units': '1'}
+    ds_results['SH_rmse_depth'].attrs = {'long_name': 'Steric Height RMSE by depth (MC Dropout mean vs observed)', 'units': 'm'}
     
     # Climatology error attributes
     ds_results['T_glorys_error'].attrs = {'long_name': 'Temperature Climatology Error (climatology - observed)', 'units': 'degree_C'}
