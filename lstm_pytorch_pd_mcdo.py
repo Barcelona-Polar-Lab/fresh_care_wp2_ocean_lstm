@@ -33,6 +33,10 @@ import time
 warnings.filterwarnings("ignore")
 from tqdm import tqdm
 
+# NOTE: Shared utilities (OceanLSTM, normalize_data, denormalize_data) are also
+# available in lstm_pytorch_utils.py for use by arctic_reconstruction.py.
+# This script uses local definitions for standalone operation.
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -40,12 +44,19 @@ from tqdm import tqdm
 class Config:
     """Configuration class for easy parameter adjustment"""
     
-    # File paths
-    TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_train63.nc'
-    DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_dev21.nc'
-    TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_test16.nc'
+    # Local file paths
+    #TRAIN_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_train63.nc'
+    #DEV_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_dev21.nc'
+    #TEST_FILE = 'fresh_data/var_depths_data_for_LSTM_B_wg_test16.nc'
+
+    #Remote file paths
+    TRAIN_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_train63.nc'
+    DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_dev21.nc'
+    TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_test16.nc'
+
     MODEL_PARENT_DIR = 'model_LSTM_40_40_sat_znorm'  # Parent directory for models
-    MODEL_DIR = None  # Will be set dynamically based on LSTM units
+    MODEL_DIR = None  # Will be set dynamically based on LSTM units, can be 
+                      # overridden by command line argument.
     
     # Model architecture
     LSTM_UNITS = [40, 40]  # Can be changed to any list of integers
@@ -72,17 +83,69 @@ class Config:
     SURFACE_TS = 'satellite'  # 'satellite' for SST/SSS or 'glorys' for SST_glorys/SSS_glorys
     
     # Input variables configuration (easy to modify)
-    INPUT_VARS = {
-        'sst_anomaly': True,   # Sea surface temperature anomaly
-        'sss_anomaly': True,   # Sea surface salinity anomaly  
-        'adt_anomaly': True,   # Absolute dynamic topography anomaly
-        'latitude': False,      # Profile latitude
-        'longitude': False,     # Profile longitude
-        'x_ease': True,      # EASE grid x-coordinate
-        'y_ease': True,      # EASE grid y-coordinate
-        'seasonal_cos': True,  # Cosine of seasonal cycle
-        'seasonal_sin': True   # Sine of seasonal cycle
+    # Computed input variables (require custom calculations)
+    # Order: sst_anomaly, sss_anomaly, sst_glorys_anomaly, sss_glorys_anomaly, seasonal_cos, seasonal_sin
+    COMPUTED_INPUT_VARS = {
+        'sst_anomaly': True,          # Sea surface temperature anomaly (satellite SST - GLORYS surface)
+        'sss_anomaly': True,          # Sea surface salinity anomaly (satellite SSS - GLORYS surface)
+        'sst_glorys_anomaly': False,  # GLORYS SST anomaly (SST_glorys - T_glorys surface, should be ~0)
+        'sss_glorys_anomaly': False,  # GLORYS SSS anomaly (SSS_glorys - S_glorys surface, should be ~0)
+        'seasonal_cos': True,         # Cosine of seasonal cycle
+        'seasonal_sin': True          # Sine of seasonal cycle
     }
+    
+    # Direct input variables (read directly from dataset, repeated to depth)
+    # Order: adt, latitude, longitude, x_ease, y_ease, bathymetry
+    # Maps: config_name -> dataset_key
+    DIRECT_INPUT_VARS = {
+        'adt': (True, 'ADT'),                 # Absolute dynamic topography
+        'latitude': (False, 'LATITUDE'),      # Profile latitude
+        'longitude': (False, 'LONGITUDE'),    # Profile longitude
+        'x_ease': (True, 'X_EASE'),           # EASE grid x-coordinate
+        'y_ease': (True, 'Y_EASE'),           # EASE grid y-coordinate
+        'bathymetry': (False, 'bathymetry')   # Bathymetry at profile location
+    }
+    
+    # Combined ordered list for binary string parsing
+    INPUT_VAR_ORDER = [
+        'sst_anomaly', 'sss_anomaly', 'sst_glorys_anomaly', 'sss_glorys_anomaly',
+        'adt', 'seasonal_cos', 'seasonal_sin',
+        'latitude', 'longitude', 'x_ease', 'y_ease', 'bathymetry'
+    ]
+    
+    @classmethod
+    def get_input_var_enabled(cls, var_name):
+        """Check if an input variable is enabled"""
+        if var_name in cls.COMPUTED_INPUT_VARS:
+            return cls.COMPUTED_INPUT_VARS[var_name]
+        elif var_name in cls.DIRECT_INPUT_VARS:
+            return cls.DIRECT_INPUT_VARS[var_name][0]
+        return False
+    
+    @classmethod
+    def get_all_input_vars(cls):
+        """Get dict of all input variables with their enabled status"""
+        result = {k: v for k, v in cls.COMPUTED_INPUT_VARS.items()}
+        result.update({k: v[0] for k, v in cls.DIRECT_INPUT_VARS.items()})
+        return result
+    
+    @classmethod
+    def set_input_vars_from_binary(cls, binary_string):
+        """Set input variables from a binary string (e.g., '1110011110')"""
+        if len(binary_string) != len(cls.INPUT_VAR_ORDER):
+            raise ValueError(
+                f"Binary string length ({len(binary_string)}) doesn't match "
+                f"number of input variables ({len(cls.INPUT_VAR_ORDER)}).\n"
+                f"Expected order: {cls.INPUT_VAR_ORDER}"
+            )
+        
+        for i, var_name in enumerate(cls.INPUT_VAR_ORDER):
+            enabled = binary_string[i] == '1'
+            if var_name in cls.COMPUTED_INPUT_VARS:
+                cls.COMPUTED_INPUT_VARS[var_name] = enabled
+            elif var_name in cls.DIRECT_INPUT_VARS:
+                ds_key = cls.DIRECT_INPUT_VARS[var_name][1]
+                cls.DIRECT_INPUT_VARS[var_name] = (enabled, ds_key)
     
     # Output variables (this is just informative!)
     OUTPUT_VARS = ['steric_height', 'temperature', 'salinity']
@@ -97,6 +160,9 @@ class Config:
 # ============================================================================
 # NEURAL NETWORK MODEL
 # ============================================================================
+
+# NOTE: OceanLSTM is also defined in lstm_pytorch_utils.py for sharing with
+# arctic_reconstruction.py. The local definition below is kept for standalone use.
 
 class OceanLSTM(nn.Module):
     """
@@ -265,7 +331,9 @@ def main():
                        help='Surface T/S data source: satellite (SST/SSS) or glorys (SST_glorys/SSS_glorys)')
     parser.add_argument('--model_dir', type=str, default=None,
                        help='Custom model directory path (for testing existing models). If not provided, will be auto-generated from LSTM units and surface T/S source')
-     
+    parser.add_argument('--input_vars', type=str, default=None,
+                       help=f'Binary string to enable/disable input variables. Order: {Config.INPUT_VAR_ORDER}')
+  
     args = parser.parse_args()    # Override config if command line arguments provided
 
     if args.lstm_units:
@@ -284,6 +352,8 @@ def main():
         Config.TEST_REAL_DATA_ONLY = args.test_real_data_only
     if args.surface_ts:
         Config.SURFACE_TS = args.surface_ts
+    if args.input_vars:
+        Config.set_input_vars_from_binary(args.input_vars)
     
     print(f"Configuration: LSTM={Config.LSTM_UNITS}, Batch={Config.BATCH_SIZE}, Max Epochs={Config.MAX_EPOCHS}")
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")
@@ -406,7 +476,9 @@ def run_training():
         'LEARNING_RATE': Config.LEARNING_RATE,
         'PATIENCE': Config.PATIENCE,
         'MIN_DELTA': Config.MIN_DELTA,
-        'INPUT_VARS': Config.INPUT_VARS,
+        'COMPUTED_INPUT_VARS': Config.COMPUTED_INPUT_VARS,
+        'DIRECT_INPUT_VARS': Config.DIRECT_INPUT_VARS,
+        'INPUT_VAR_ORDER': Config.INPUT_VAR_ORDER,
         'OUTPUT_VARS': Config.OUTPUT_VARS,
         'SURFACE_TS': Config.SURFACE_TS
     }
@@ -1630,9 +1702,14 @@ def prepare_dataset(ds, dataset_type):
         sss_surface[:, np.newaxis], S_glorys.shape[1], axis=1  
     ) - np.repeat(S_glorys[:,0][:, np.newaxis], S_glorys.shape[1], axis=1)
     
-    adt_anomaly = np.repeat(
-        ds['ADT'].values[:, np.newaxis], SH_glorys.shape[1], axis=1
-    ) - np.repeat(SH_glorys[:,0][:, np.newaxis], SH_glorys.shape[1], axis=1)
+    # GLORYS-based surface anomalies (these should be ~0 since GLORYS surface ≈ GLORYS[:,0])
+    sst_glorys_anomaly = np.repeat(
+        ds['SST_glorys'].values[:, np.newaxis], T_glorys.shape[1], axis=1
+    ) - np.repeat(T_glorys[:,0][:, np.newaxis], T_glorys.shape[1], axis=1)
+    
+    sss_glorys_anomaly = np.repeat(
+        ds['SSS_glorys'].values[:, np.newaxis], S_glorys.shape[1], axis=1
+    ) - np.repeat(S_glorys[:,0][:, np.newaxis], S_glorys.shape[1], axis=1)
     
     # In-situ data (anomalies from climatology)
     T_anom = ds['TEMP'].values - T_glorys
@@ -1645,54 +1722,46 @@ def prepare_dataset(ds, dataset_type):
     
     # Seasonal cycle
     day_of_year = ds['day_of_year'].values.astype('int32')
-    seasonal_cos = np.cos(2 * np.pi * (day_of_year / 365) + 1)
-    seasonal_sin = np.sin(2 * np.pi * (day_of_year / 365) + 1)
+    seasonal_cos = np.cos(2 * np.pi * (day_of_year / 365))
+    seasonal_sin = np.sin(2 * np.pi * (day_of_year / 365))
     
     # Prepare input arrays based on configuration
     input_arrays = []
     input_names = []
     
-    if Config.INPUT_VARS['sst_anomaly']:
+    # Add computed input variables (these require custom calculations)
+    if Config.COMPUTED_INPUT_VARS['sst_anomaly']:
         input_arrays.append(sst_anomaly)
         input_names.append('sst_anomaly')
         
-    if Config.INPUT_VARS['sss_anomaly']:
+    if Config.COMPUTED_INPUT_VARS['sss_anomaly']:
         input_arrays.append(sss_anomaly)
         input_names.append('sss_anomaly')
+    
+    if Config.COMPUTED_INPUT_VARS['sst_glorys_anomaly']:
+        input_arrays.append(sst_glorys_anomaly)
+        input_names.append('sst_glorys_anomaly')
         
-    if Config.INPUT_VARS['adt_anomaly']:
-        input_arrays.append(adt_anomaly)
-        input_names.append('adt_anomaly')
+    if Config.COMPUTED_INPUT_VARS['sss_glorys_anomaly']:
+        input_arrays.append(sss_glorys_anomaly)
+        input_names.append('sss_glorys_anomaly')
         
-    if Config.INPUT_VARS['latitude']:
-        lat_array = np.repeat(ds['LATITUDE'].values[:, np.newaxis], n_depth, axis=1)
-        input_arrays.append(lat_array)
-        input_names.append('latitude')
-        
-    if Config.INPUT_VARS['longitude']:
-        lon_array = np.repeat(ds['LONGITUDE'].values[:, np.newaxis], n_depth, axis=1)
-        input_arrays.append(lon_array)
-        input_names.append('longitude')
-
-    if Config.INPUT_VARS['x_ease']:
-        x_ease_array = np.repeat(ds['X_EASE'].values[:, np.newaxis], n_depth, axis=1)
-        input_arrays.append(x_ease_array)
-        input_names.append('x_ease')
-        
-    if Config.INPUT_VARS['y_ease']:
-        y_ease_array = np.repeat(ds['Y_EASE'].values[:, np.newaxis], n_depth, axis=1)
-        input_arrays.append(y_ease_array)
-        input_names.append('y_ease')
-        
-    if Config.INPUT_VARS['seasonal_cos']:
+    if Config.COMPUTED_INPUT_VARS['seasonal_cos']:
         cos_array = np.repeat(seasonal_cos[:, np.newaxis], n_depth, axis=1)
         input_arrays.append(cos_array)
         input_names.append('seasonal_cos')
         
-    if Config.INPUT_VARS['seasonal_sin']:
+    if Config.COMPUTED_INPUT_VARS['seasonal_sin']:
         sin_array = np.repeat(seasonal_sin[:, np.newaxis], n_depth, axis=1)
         input_arrays.append(sin_array)
         input_names.append('seasonal_sin')
+    
+    # Add direct input variables (read from dataset, repeated to depth)
+    for var_name, (enabled, ds_key) in Config.DIRECT_INPUT_VARS.items():
+        if enabled:
+            var_array = np.repeat(ds[ds_key].values[:, np.newaxis], n_depth, axis=1)
+            input_arrays.append(var_array)
+            input_names.append(var_name)
     
     # Handle variable vs fixed length sequences
     if use_variable_lengths:
@@ -1787,6 +1856,9 @@ def prepare_dataset(ds, dataset_type):
                 'depth': ds['depth'].values
             }
         }
+
+# NOTE: normalize_data and denormalize_data are also defined in lstm_pytorch_utils.py
+# for sharing with arctic_reconstruction.py. Local definitions kept for standalone use.
 
 def normalize_data(data, X_mean, X_std, y_mean, y_std):
     """
