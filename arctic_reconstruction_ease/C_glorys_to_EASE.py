@@ -70,7 +70,7 @@ INPUT_DIR = Path('/media/nico/DATOS/Data_reanalysis/GLORYS_monthly/data')
 
 # Test vs production output directories
 TEST_OUTPUT_DIR = Path('/home/nico/SACO/FRESH-CARE/Codes/WP2/buongiorno_to_pytorch_padding/arctic_reconstruction/test_out/glorys_ease')
-PROD_OUTPUT_DIR = Path('/home/nico/Desktop/AUX_DIR_FRESH_CARE/glorys_aux')
+PROD_OUTPUT_DIR = Path('/home/nico/SACO/FRESH-CARE/Data_reanalysis/glorys_2012_ease_woaDepths')
 
 OUTPUT_DIR = TEST_OUTPUT_DIR if TEST_MODE else PROD_OUTPUT_DIR
 

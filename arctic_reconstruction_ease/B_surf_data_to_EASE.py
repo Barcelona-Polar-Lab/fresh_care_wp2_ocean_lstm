@@ -39,7 +39,6 @@ EASE_PROJ4 = f"+proj=laea +lat_0={EASE_LAT_0} +lon_0={EASE_LON_0} +x_0={EASE_FAL
 
 # Set USE_TEST_DIRS to True for testing, False for production
 USE_TEST_DIRS = False
-
 # --- TEST DIRECTORIES ---
 TEST_INPUT_DIRS = {
     'SST': '/home/nico/SACO/FRESH-CARE/Codes/WP2/buongiorno_to_pytorch_padding/arctic_reconstruction/test_in/SST',
@@ -52,9 +51,9 @@ TEST_OUTPUT_BASE = '/home/nico/SACO/FRESH-CARE/Codes/WP2/buongiorno_to_pytorch_p
 # Input directories: where the tree organizing nc files starts
 # Output: will be INPUT_DIR_ease (e.g., SST -> SST_ease in the same parent directory)
 PROD_INPUT_DIRS = {
-    'SST': '/home/nico/Desktop/AUX_DIR_FRESH_CARE/satellite/SST/data',
-    'SSS': '/home/nico/Desktop/AUX_DIR_FRESH_CARE/satellite/SSS_cci_v55/regridded_filled_wg',
-    'ADT': '/home/nico/Desktop/AUX_DIR_FRESH_CARE/satellite/ADT/aviso_regridded_0.25_north_pole_interp',
+    'SST': '/home/nico/SACO/FRESH-CARE/Data_satellite/SST/data',
+    'SSS': '/home/nico/SACO/FRESH-CARE/Data_satellite/SSS/sss_cci_v55/regridded_filled_wg',
+    'ADT': '/home/nico/SACO/FRESH-CARE/Data_satellite/AVISO/regridded/regridded_0.25_north_pole_interp',
 }
 # None means output goes to sibling directory with _ease suffix
 PROD_OUTPUT_BASE = None
@@ -117,35 +116,6 @@ def create_ease_grid_structure():
     
     return x_ease, y_ease, grid_mapping_attrs
 
-
-def latlon_to_ease(lat, lon, transformer):
-    """
-    Convert lat/lon coordinates to EASE grid coordinates.
-    
-    Parameters:
-    -----------
-    lat : array
-        Latitude values
-    lon : array
-        Longitude values
-    transformer : pyproj.Transformer
-        Coordinate transformer from WGS84 to EASE
-    
-    Returns:
-    --------
-    tuple
-        (x_ease, y_ease) coordinate arrays
-    """
-    # Create meshgrid if 1D arrays provided
-    if lat.ndim == 1 and lon.ndim == 1:
-        lon_2d, lat_2d = np.meshgrid(lon, lat)
-    else:
-        lon_2d, lat_2d = lon, lat
-    
-    # Transform coordinates
-    x_ease, y_ease = transformer.transform(lat_2d, lon_2d)
-    
-    return x_ease, y_ease
 
 
 def has_latlon_coords(ds):
@@ -212,14 +182,6 @@ def interpolate_to_ease(data_2d, lat_orig, lon_orig, x_ease_target, y_ease_targe
     np.ndarray
         Interpolated data on EASE grid (y_ease, x_ease)
     """
-    # Get EASE coordinates for original lat/lon grid
-    x_ease_orig, y_ease_orig = latlon_to_ease(lat_orig, lon_orig, transformer)
-    
-    # For RegularGridInterpolator, we need 1D coordinates
-    # Since the original grid is regular in lat/lon, we extract the EASE coords
-    # along the center row and column
-    mid_lat_idx = len(lat_orig) // 2
-    mid_lon_idx = len(lon_orig) // 2
     
     # The original data is on a regular lat/lon grid
     # We'll interpolate in the original lat/lon space, then map to EASE
@@ -233,13 +195,10 @@ def interpolate_to_ease(data_2d, lat_orig, lon_orig, x_ease_target, y_ease_targe
     )
     
     # Create meshgrid of target EASE coordinates
-    x_ease_2d, y_ease_2d = np.meshgrid(x_ease_target, y_ease_target)
+    x_ease_target_2d, y_ease_target_2d = np.meshgrid(x_ease_target, y_ease_target)
     
     # Convert target EASE to lat/lon
-    lon_target, lat_target = transformer_inverse.transform(x_ease_2d, y_ease_2d)
-    
-    # Handle NaN values in the original data
-    data_filled = np.where(np.isnan(data_2d), fill_value, data_2d)
+    lon_target, lat_target = transformer_inverse.transform(x_ease_target_2d, y_ease_target_2d)
     
     # Create interpolator on original lat/lon grid
     # Note: RegularGridInterpolator expects (y, x) order for coordinates
@@ -247,7 +206,7 @@ def interpolate_to_ease(data_2d, lat_orig, lon_orig, x_ease_target, y_ease_targe
     try:
         interpolator = RegularGridInterpolator(
             (lat_orig, lon_orig),
-            data_filled,
+            data_2d,
             method='linear',
             bounds_error=False,
             fill_value=fill_value

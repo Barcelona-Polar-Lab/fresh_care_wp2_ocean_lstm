@@ -61,8 +61,7 @@ class Config:
     # Model architecture
     LSTM_UNITS = [40, 40]  # Can be changed to any list of integers
     DROPOUT_RATE = 0.2
-    ACTIVATION = 'tanh'
-    
+        
     # Training parameters
     BATCH_SIZE = 16
     MAX_EPOCHS = 500
@@ -333,6 +332,8 @@ def main():
                        help='Custom model directory path (for testing existing models). If not provided, will be auto-generated from LSTM units and surface T/S source')
     parser.add_argument('--input_vars', type=str, default=None,
                        help=f'Binary string to enable/disable input variables. Order: {Config.INPUT_VAR_ORDER}')
+    parser.add_argument('--n_mc_samples', type=int, default=None,
+                       help='Number of Monte Carlo Dropout forward passes for uncertainty estimation')
   
     args = parser.parse_args()    # Override config if command line arguments provided
 
@@ -354,6 +355,8 @@ def main():
         Config.SURFACE_TS = args.surface_ts
     if args.input_vars:
         Config.set_input_vars_from_binary(args.input_vars)
+    if args.n_mc_samples:
+        Config.N_MC_SAMPLES = args.n_mc_samples
     
     print(f"Configuration: LSTM={Config.LSTM_UNITS}, Batch={Config.BATCH_SIZE}, Max Epochs={Config.MAX_EPOCHS}")
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")

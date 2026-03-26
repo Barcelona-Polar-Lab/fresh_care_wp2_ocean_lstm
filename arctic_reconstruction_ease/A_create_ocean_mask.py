@@ -33,7 +33,7 @@ EASE_PROJ4 = f"+proj=laea +lat_0={EASE_LAT_0} +lon_0={EASE_LON_0} +x_0={EASE_FAL
 
 # ============================================================================
 
-DEFAULT_OUTPUT = 'data_for_reconstruction/ocean_mask_ease_grid.nc'
+DEFAULT_OUTPUT = '/home/nico/SACO/FRESH-CARE/Arctic_masks/natural_earth_data/ne_10m_ocean_EASE_masks/ocean_mask_ease_grid_25km.nc'
 DEFAULT_SHAPE_FILE = '/home/nico/SACO/FRESH-CARE/Arctic_masks/natural_earth_data/ne_10m_ocean/ne_10m_ocean.shp'
 
 
