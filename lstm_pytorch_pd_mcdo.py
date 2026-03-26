@@ -151,15 +151,48 @@ class Config:
                 ds_key = cls.DIRECT_INPUT_VARS[var_name][1]
                 cls.DIRECT_INPUT_VARS[var_name] = (enabled, ds_key)
     
-    # Output variables (this is just informative!)
-    OUTPUT_VARS = ['steric_height', 'temperature', 'salinity']
+    # Output variables configuration
+    # Order: temperature, salinity, steric_height
+    OUTPUT_VAR_ORDER = ['temperature', 'salinity', 'steric_height']
+    OUTPUT_VARS_ENABLED = {
+        'temperature': True,
+        'salinity': True,
+        'steric_height': True,
+    }
+    
+    @classmethod
+    def get_enabled_output_vars(cls):
+        """Get ordered list of enabled output variable names"""
+        return [v for v in cls.OUTPUT_VAR_ORDER if cls.OUTPUT_VARS_ENABLED[v]]
+    
+    @classmethod
+    def set_output_vars_from_binary(cls, binary_string):
+        """Set output variables from a binary string (e.g., '110' for T+S only).
+        Order: temperature, salinity, steric_height"""
+        if len(binary_string) != len(cls.OUTPUT_VAR_ORDER):
+            raise ValueError(
+                f"Output binary string length ({len(binary_string)}) doesn't match "
+                f"number of output variables ({len(cls.OUTPUT_VAR_ORDER)}).\n"
+                f"Expected order: {cls.OUTPUT_VAR_ORDER}"
+            )
+        for i, var_name in enumerate(cls.OUTPUT_VAR_ORDER):
+            cls.OUTPUT_VARS_ENABLED[var_name] = (binary_string[i] == '1')
+        enabled = cls.get_enabled_output_vars()
+        if len(enabled) == 0:
+            raise ValueError("At least one output variable must be enabled")
     
     @staticmethod
     def get_model_dir(lstm_units):
-        """Get MODEL_DIR based on LSTM units and surface T/S source"""
+        """Get MODEL_DIR based on LSTM units, surface T/S source, and output config"""
         units_str = '_'.join(map(str, lstm_units))
         surface_suffix = '_sat' if Config.SURFACE_TS == 'satellite' else '_glor'
-        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}{surface_suffix}'
+        # Add output config suffix if not all outputs are enabled
+        enabled = Config.get_enabled_output_vars()
+        if len(enabled) < len(Config.OUTPUT_VAR_ORDER):
+            output_suffix = '_' + ''.join(v[0].upper() for v in enabled)  # e.g., '_TS'
+        else:
+            output_suffix = ''
+        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}{surface_suffix}{output_suffix}'
 
 # ============================================================================
 # NEURAL NETWORK MODEL
@@ -339,6 +372,8 @@ def main():
                        help=f'Binary string to enable/disable input variables. Order: {Config.INPUT_VAR_ORDER}')
     parser.add_argument('--n_mc_samples', type=int, default=None,
                        help='Number of Monte Carlo Dropout forward passes for uncertainty estimation')
+    parser.add_argument('--output_vars', type=str, default=None,
+                       help=f'Binary string to enable/disable output variables. Order: {Config.OUTPUT_VAR_ORDER}')
   
     args = parser.parse_args()    # Override config if command line arguments provided
 
@@ -362,10 +397,13 @@ def main():
         Config.set_input_vars_from_binary(args.input_vars)
     if args.n_mc_samples:
         Config.N_MC_SAMPLES = args.n_mc_samples
+    if args.output_vars:
+        Config.set_output_vars_from_binary(args.output_vars)
     
     print(f"Configuration: LSTM={Config.LSTM_UNITS}, Batch={Config.BATCH_SIZE}, Max Epochs={Config.MAX_EPOCHS}")
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")
     print(f"Surface T/S source: {Config.SURFACE_TS}")
+    print(f"Output variables: {Config.get_enabled_output_vars()}")
     
     # Set model directory
     if args.model_dir:
@@ -490,7 +528,8 @@ def run_training():
         'COMPUTED_INPUT_VARS': Config.COMPUTED_INPUT_VARS,
         'DIRECT_INPUT_VARS': Config.DIRECT_INPUT_VARS,
         'INPUT_VAR_ORDER': Config.INPUT_VAR_ORDER,
-        'OUTPUT_VARS': Config.OUTPUT_VARS,
+        'OUTPUT_VAR_ORDER': Config.OUTPUT_VAR_ORDER,
+        'OUTPUT_VARS_ENABLED': dict(Config.OUTPUT_VARS_ENABLED),
         'SURFACE_TS': Config.SURFACE_TS
     }
     
@@ -499,6 +538,7 @@ def run_training():
         'config': config_dict,
         'norm_params': norm_params,
         'input_names': train_data['input_names'],
+        'output_names': train_data['output_names'],
         'model_architecture': {
             'input_size': n_input_vars,
             'output_size': n_output_vars,
@@ -573,10 +613,11 @@ def run_testing():
     error_stats = compute_error_statistics(y_pred, test_data['y'], test_data)
     
     # Print overall RMSE
+    output_names = test_data.get('output_names', Config.get_enabled_output_vars())
+    output_units = {'temperature': '°C', 'salinity': 'PSU', 'steric_height': 'cm'}
     print(f"\nOverall RMSE:")
-    print(f"Steric Height: {error_stats['rmse_total'][0]:.3f} cm")
-    print(f"Temperature: {error_stats['rmse_total'][1]:.3f} °C")
-    print(f"Salinity: {error_stats['rmse_total'][2]:.3f} PSU")
+    for i, var_name in enumerate(output_names):
+        print(f"  {var_name.replace('_', ' ').title()}: {error_stats['rmse_total'][i]:.3f} {output_units.get(var_name, '')}")
     print(f"Sum of RMSEs: {error_stats['rmse_sum']:.3f}")
     
     # Retrieve training time from checkpoint if available
@@ -1137,330 +1178,267 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
         }
 
 def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y_ci_lower=None, y_ci_upper=None):
-    """Create comprehensive results dataset with all profiles, statistics, and uncertainties"""
+    """Create comprehensive results dataset with all profiles, statistics, and uncertainties.
+    
+    Dynamically includes only the output variables that were used for training/prediction.
+    Climatology, observed profiles, and GLORYS errors are always included for all three
+    variables (temperature, salinity, steric_height) as reference data.
+    """
     
     print("Creating results dataset...")
     
+    # Mapping from output names to their data keys and metadata
+    OUTPUT_META = {
+        'temperature': {
+            'prefix': 'T',
+            'units': 'degree_C',
+            'long_name': 'Temperature',
+            'climatology_key': 'T_glorys',
+            'full_profile_key': 'T',
+        },
+        'salinity': {
+            'prefix': 'S',
+            'units': '1',
+            'long_name': 'Salinity',
+            'climatology_key': 'S_glorys',
+            'full_profile_key': 'S',
+        },
+        'steric_height': {
+            'prefix': 'SH',
+            'units': 'm',
+            'long_name': 'Steric Height',
+            'climatology_key': 'SH_glorys',
+            'full_profile_key': 'SH',
+        },
+    }
+    ALL_OUTPUT_NAMES = ['temperature', 'salinity', 'steric_height']
+    
+    # Determine which outputs are enabled (from the model's output_names)
+    output_names = test_data.get('output_names', Config.get_enabled_output_vars())
+    output_idx = {name: i for i, name in enumerate(output_names)}
+    
     # Handle variable vs fixed length data
     if test_data.get('variable_lengths', False):
-        # Variable-length sequences: need to pad to consistent shape
         lengths = test_data['lengths']
         max_length = max(lengths)
         n_profiles = len(y_pred)
         
-        # Pad all arrays to max_length for xarray compatibility
-        def pad_to_max_length(data_list, fill_value=np.nan):
-            padded = np.full((n_profiles, max_length), fill_value)
-            for i, length in enumerate(lengths):
-                if isinstance(data_list[i], np.ndarray) and data_list[i].ndim == 1:
-                    padded[i, :length] = data_list[i]
-                elif isinstance(data_list[i], np.ndarray) and data_list[i].ndim == 2:
-                    # Handle 2D profiles (multiple variables)
-                    return pad_to_max_length_2d(data_list, fill_value)
-            return padded
-        
         def pad_to_max_length_2d(data_list, fill_value=np.nan):
-            n_vars = data_list[0].shape[1] if len(data_list) > 0 else 3
+            n_vars = data_list[0].shape[1] if len(data_list) > 0 else 1
             padded = np.full((n_profiles, max_length, n_vars), fill_value)
             for i, length in enumerate(lengths):
                 padded[i, :length, :] = data_list[i]
             return padded
         
-        # Get climatology and pad to max_length
-        T_glorys = test_data['climatology']['T_glorys']
-        S_glorys = test_data['climatology']['S_glorys']
-        SH_glorys = test_data['climatology']['SH_glorys']
+        def pad_profile_2d(data_2d, fill_value=np.nan):
+            """Pad a 2D array (n_profiles, n_depths_original) to (n_profiles, max_length)"""
+            padded = np.full((n_profiles, max_length), fill_value)
+            for i, length in enumerate(lengths):
+                padded[i, :length] = data_2d[i, :length]
+            return padded
         
-        # Pad climatology arrays
-        T_glorys_padded = np.full((n_profiles, max_length), np.nan)
-        S_glorys_padded = np.full((n_profiles, max_length), np.nan)
-        SH_glorys_padded = np.full((n_profiles, max_length), np.nan)
-        
-        for i, length in enumerate(lengths):
-            T_glorys_padded[i, :length] = T_glorys[i, :length]
-            S_glorys_padded[i, :length] = S_glorys[i, :length]
-            SH_glorys_padded[i, :length] = SH_glorys[i, :length]
-        
-        # Extract predictions and observations (use padded arrays from error_stats)
+        # Pad predictions, uncertainty, and CI
         y_pred_padded = pad_to_max_length_2d(y_pred)
-        y_obs_padded = pad_to_max_length_2d(test_data['y'])
+        y_unc_padded = pad_to_max_length_2d(y_uncertainty) if y_uncertainty is not None else None
+        y_ci_low_padded = pad_to_max_length_2d(y_ci_lower) if y_ci_lower is not None else None
+        y_ci_up_padded = pad_to_max_length_2d(y_ci_upper) if y_ci_upper is not None else None
         
-        SH_pred_anom, T_pred_anom, S_pred_anom = y_pred_padded[:,:,0], y_pred_padded[:,:,1], y_pred_padded[:,:,2]
-        SH_obs_anom, T_obs_anom, S_obs_anom = y_obs_padded[:,:,0], y_obs_padded[:,:,1], y_obs_padded[:,:,2]
+        # Pad climatology and full observed profiles (always all 3 vars)
+        climatology_padded = {}
+        obs_padded = {}
+        for var_name in ALL_OUTPUT_NAMES:
+            meta = OUTPUT_META[var_name]
+            climatology_padded[var_name] = pad_profile_2d(test_data['climatology'][meta['climatology_key']])
+            obs_padded[var_name] = pad_profile_2d(test_data['full_profiles'][meta['full_profile_key']])
         
-        # Pad uncertainty and CI arrays if provided
-        if y_uncertainty is not None:
-            y_uncertainty_padded = pad_to_max_length_2d(y_uncertainty)
-            SH_uncertainty, T_uncertainty, S_uncertainty = y_uncertainty_padded[:,:,0], y_uncertainty_padded[:,:,1], y_uncertainty_padded[:,:,2]
-        
-        if y_ci_lower is not None:
-            y_ci_lower_padded = pad_to_max_length_2d(y_ci_lower)
-            SH_ci_lower, T_ci_lower, S_ci_lower = y_ci_lower_padded[:,:,0], y_ci_lower_padded[:,:,1], y_ci_lower_padded[:,:,2]
-        
-        if y_ci_upper is not None:
-            y_ci_upper_padded = pad_to_max_length_2d(y_ci_upper)
-            SH_ci_upper, T_ci_upper, S_ci_upper = y_ci_upper_padded[:,:,0], y_ci_upper_padded[:,:,1], y_ci_upper_padded[:,:,2]
-        
-        # Use provided depth array (full depth range)
-        depth_array = test_data['metadata']['depth'][:max_length]  # Truncate to max_length
+        depth_array = test_data['metadata']['depth'][:max_length]
         
     else:
-        # Fixed-length sequences (original behavior)
-        SH_pred_anom, T_pred_anom, S_pred_anom = y_pred[:,:,0], y_pred[:,:,1], y_pred[:,:,2]
-        SH_obs_anom, T_obs_anom, S_obs_anom = test_data['y'][:,:,0], test_data['y'][:,:,1], test_data['y'][:,:,2]
+        n_profiles = y_pred.shape[0] if not isinstance(y_pred, list) else len(y_pred)
+        y_pred_padded = np.array(y_pred) if isinstance(y_pred, list) else y_pred
+        y_unc_padded = (np.array(y_uncertainty) if isinstance(y_uncertainty, list) else y_uncertainty) if y_uncertainty is not None else None
+        y_ci_low_padded = (np.array(y_ci_lower) if isinstance(y_ci_lower, list) else y_ci_lower) if y_ci_lower is not None else None
+        y_ci_up_padded = (np.array(y_ci_upper) if isinstance(y_ci_upper, list) else y_ci_upper) if y_ci_upper is not None else None
         
-        # Extract uncertainty and CI if provided
-        if y_uncertainty is not None:
-            SH_uncertainty, T_uncertainty, S_uncertainty = y_uncertainty[:,:,0], y_uncertainty[:,:,1], y_uncertainty[:,:,2]
-        
-        if y_ci_lower is not None:
-            SH_ci_lower, T_ci_lower, S_ci_lower = y_ci_lower[:,:,0], y_ci_lower[:,:,1], y_ci_lower[:,:,2]
-        
-        if y_ci_upper is not None:
-            SH_ci_upper, T_ci_upper, S_ci_upper = y_ci_upper[:,:,0], y_ci_upper[:,:,1], y_ci_upper[:,:,2]
-        
-        T_glorys_padded = test_data['climatology']['T_glorys']
-        S_glorys_padded = test_data['climatology']['S_glorys'] 
-        SH_glorys_padded = test_data['climatology']['SH_glorys']
+        climatology_padded = {}
+        obs_padded = {}
+        for var_name in ALL_OUTPUT_NAMES:
+            meta = OUTPUT_META[var_name]
+            climatology_padded[var_name] = test_data['climatology'][meta['climatology_key']]
+            obs_padded[var_name] = test_data['full_profiles'][meta['full_profile_key']]
         
         depth_array = test_data['metadata']['depth']
+        max_length = len(depth_array)
     
-    # Compute full profiles (anomalies + climatology)
-    SH_pred = SH_pred_anom + SH_glorys_padded
-    T_pred = T_pred_anom + T_glorys_padded
-    S_pred = S_pred_anom + S_glorys_padded
+    # Compute observed anomalies from full_profiles - climatology (always for all 3 vars)
+    obs_anom = {}
+    for var_name in ALL_OUTPUT_NAMES:
+        obs_anom[var_name] = obs_padded[var_name] - climatology_padded[var_name]
     
-    # Observed full profiles (pad if needed)
-    if test_data.get('variable_lengths', False):
-        T_obs_full = test_data['full_profiles']['T']
-        S_obs_full = test_data['full_profiles']['S']
-        SH_obs_full = test_data['full_profiles']['SH']
+    # Extract per-variable predictions, full profiles, uncertainty, and CI
+    pred_anom = {}
+    pred_full = {}
+    unc = {}
+    ci_lower_data = {}
+    ci_upper_data = {}
+    
+    for var_name, idx in output_idx.items():
+        pred_anom[var_name] = y_pred_padded[:, :, idx]
+        pred_full[var_name] = pred_anom[var_name] + climatology_padded[var_name]
+        if y_unc_padded is not None:
+            unc[var_name] = y_unc_padded[:, :, idx]
+        if y_ci_low_padded is not None:
+            ci_lower_data[var_name] = y_ci_low_padded[:, :, idx]
+        if y_ci_up_padded is not None:
+            ci_upper_data[var_name] = y_ci_up_padded[:, :, idx]
+    
+    # Extract error statistics per enabled output variable
+    errors_data = {}
+    rmse_prof_data = {}
+    rmse_depth_data = {}
+    for i, var_name in enumerate(output_names):
+        errors_data[var_name] = error_stats['errors'][:, :, i]
+        rmse_prof_data[var_name] = error_stats['rmse_profiles'][:, i]
+        rmse_depth_data[var_name] = error_stats['rmse_depths'][:, i]
+    
+    # Compute GLORYS errors and RMSE (always for all 3 vars, independent of model)
+    glorys_errors = {}
+    glorys_rmse_prof = {}
+    glorys_rmse_depth = {}
+    for var_name in ALL_OUTPUT_NAMES:
+        glorys_errors[var_name] = climatology_padded[var_name] - obs_padded[var_name]
         
-        # Pad full profiles
-        T_obs = np.full((n_profiles, max_length), np.nan)
-        S_obs = np.full((n_profiles, max_length), np.nan)
-        SH_obs = np.full((n_profiles, max_length), np.nan)
-        
-        for i, length in enumerate(lengths):
-            T_obs[i, :length] = T_obs_full[i, :length]
-            S_obs[i, :length] = S_obs_full[i, :length]
-            SH_obs[i, :length] = SH_obs_full[i, :length]
-    else:
-        T_obs = test_data['full_profiles']['T']
-        S_obs = test_data['full_profiles']['S']  
-        SH_obs = test_data['full_profiles']['SH']
-    
-    # Extract error statistics (handle variable lengths)
-    errors = error_stats['errors']
-    SH_errors, T_errors, S_errors = errors[:,:,0], errors[:,:,1], errors[:,:,2]
-    
-    # RMSE statistics
-    SH_rmse_prof, T_rmse_prof, S_rmse_prof = error_stats['rmse_profiles'][:,0], error_stats['rmse_profiles'][:,1], error_stats['rmse_profiles'][:,2]
-    SH_rmse_depth, T_rmse_depth, S_rmse_depth = error_stats['rmse_depths'][:,0], error_stats['rmse_depths'][:,1], error_stats['rmse_depths'][:,2]
-    
-    # Compute climatology errors (climatology - observed full profiles)
-    T_glorys_errors = T_glorys_padded - T_obs
-    S_glorys_errors = S_glorys_padded - S_obs
-    SH_glorys_errors = SH_glorys_padded - SH_obs
-    
-    # Compute climatology RMSE (handle NaN values for variable lengths)
-    if test_data.get('variable_lengths', False):
-        # For variable lengths, compute RMSE only over valid depths
-        T_glorys_rmse_prof = np.full(n_profiles, np.nan)
-        S_glorys_rmse_prof = np.full(n_profiles, np.nan)
-        SH_glorys_rmse_prof = np.full(n_profiles, np.nan)
-        
-        for i, length in enumerate(lengths):
-            T_glorys_rmse_prof[i] = np.sqrt(np.nanmean(T_glorys_errors[i, :length]**2))
-            S_glorys_rmse_prof[i] = np.sqrt(np.nanmean(S_glorys_errors[i, :length]**2))
-            SH_glorys_rmse_prof[i] = np.sqrt(np.nanmean(SH_glorys_errors[i, :length]**2))
-        
-        # RMSE by depth (average over profiles, ignoring NaN)
-        T_glorys_rmse_depth = np.sqrt(np.nanmean(T_glorys_errors**2, axis=0))
-        S_glorys_rmse_depth = np.sqrt(np.nanmean(S_glorys_errors**2, axis=0))
-        SH_glorys_rmse_depth = np.sqrt(np.nanmean(SH_glorys_errors**2, axis=0))
-        
-    else:
-        # Fixed lengths (original behavior)
-        T_glorys_rmse_prof = np.sqrt(np.mean(T_glorys_errors**2, axis=1))
-        S_glorys_rmse_prof = np.sqrt(np.mean(S_glorys_errors**2, axis=1))
-        SH_glorys_rmse_prof = np.sqrt(np.mean(SH_glorys_errors**2, axis=1))
-        
-        T_glorys_rmse_depth = np.sqrt(np.mean(T_glorys_errors**2, axis=0))
-        S_glorys_rmse_depth = np.sqrt(np.mean(S_glorys_errors**2, axis=0))
-        SH_glorys_rmse_depth = np.sqrt(np.mean(SH_glorys_errors**2, axis=0))
-    
-    # Compute averaged uncertainties (mean of std deviations)
-    if y_uncertainty is not None:
         if test_data.get('variable_lengths', False):
-            # For variable lengths, average only over valid depths
-            T_uncertainty_prof = np.full(n_profiles, np.nan)
-            S_uncertainty_prof = np.full(n_profiles, np.nan)
-            SH_uncertainty_prof = np.full(n_profiles, np.nan)
-            
+            glorys_rmse_prof[var_name] = np.full(n_profiles, np.nan)
             for i, length in enumerate(lengths):
-                T_uncertainty_prof[i] = np.nanmean(T_uncertainty[i, :length])
-                S_uncertainty_prof[i] = np.nanmean(S_uncertainty[i, :length])
-                SH_uncertainty_prof[i] = np.nanmean(SH_uncertainty[i, :length])
-            
-            # Average over profiles (ignoring NaN)
-            T_uncertainty_depth = np.nanmean(T_uncertainty, axis=0)
-            S_uncertainty_depth = np.nanmean(S_uncertainty, axis=0)
-            SH_uncertainty_depth = np.nanmean(SH_uncertainty, axis=0)
-            
+                glorys_rmse_prof[var_name][i] = np.sqrt(np.nanmean(glorys_errors[var_name][i, :length]**2))
+            glorys_rmse_depth[var_name] = np.sqrt(np.nanmean(glorys_errors[var_name]**2, axis=0))
         else:
-            # Fixed lengths
-            T_uncertainty_prof = np.mean(T_uncertainty, axis=1)
-            S_uncertainty_prof = np.mean(S_uncertainty, axis=1)
-            SH_uncertainty_prof = np.mean(SH_uncertainty, axis=1)
-            
-            T_uncertainty_depth = np.mean(T_uncertainty, axis=0)
-            S_uncertainty_depth = np.mean(S_uncertainty, axis=0)
-            SH_uncertainty_depth = np.mean(SH_uncertainty, axis=0)
-    else:
-        # No uncertainties available
-        T_uncertainty_prof = None
-        S_uncertainty_prof = None
-        SH_uncertainty_prof = None
-        T_uncertainty_depth = None
-        S_uncertainty_depth = None
-        SH_uncertainty_depth = None
+            glorys_rmse_prof[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=1))
+            glorys_rmse_depth[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=0))
     
-    # Compute confidence interval margins (difference from mean prediction in anomaly space)
-    # These can be added/subtracted from predictions to get CI bounds
-    if y_ci_lower is not None and y_ci_upper is not None:
-        # Lower margin = mean - ci_lower (amount to subtract from mean)
-        T_ci_lower_margin = T_pred_anom - T_ci_lower
-        S_ci_lower_margin = S_pred_anom - S_ci_lower
-        SH_ci_lower_margin = SH_pred_anom - SH_ci_lower
+    # Compute uncertainty statistics per enabled output variable
+    unc_prof = {}
+    unc_depth = {}
+    ci_lower_margins = {}
+    ci_upper_margins = {}
+    
+    for var_name in output_idx:
+        if var_name in unc:
+            if test_data.get('variable_lengths', False):
+                unc_prof[var_name] = np.full(n_profiles, np.nan)
+                for i, length in enumerate(lengths):
+                    unc_prof[var_name][i] = np.nanmean(unc[var_name][i, :length])
+                unc_depth[var_name] = np.nanmean(unc[var_name], axis=0)
+            else:
+                unc_prof[var_name] = np.mean(unc[var_name], axis=1)
+                unc_depth[var_name] = np.mean(unc[var_name], axis=0)
         
-        # Upper margin = ci_upper - mean (amount to add to mean)
-        T_ci_upper_margin = T_ci_upper - T_pred_anom
-        S_ci_upper_margin = S_ci_upper - S_pred_anom
-        SH_ci_upper_margin = SH_ci_upper - SH_pred_anom
-    else:
-        T_ci_lower_margin = None
-        S_ci_lower_margin = None
-        SH_ci_lower_margin = None
-        T_ci_upper_margin = None
-        S_ci_upper_margin = None
-        SH_ci_upper_margin = None
+        if var_name in ci_lower_data and var_name in ci_upper_data:
+            ci_lower_margins[var_name] = pred_anom[var_name] - ci_lower_data[var_name]
+            ci_upper_margins[var_name] = ci_upper_data[var_name] - pred_anom[var_name]
     
-    # Get metadata
+    # ========== Build the dataset variables dict ==========
     metadata = test_data['metadata']
-    n_profiles = len(metadata['latitude'])
+    data_vars = {}
+    
+    # Climatology (always for all 3 vars — reference data)
+    for var_name in ALL_OUTPUT_NAMES:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_glorys'] = (['profile', 'depth'], climatology_padded[var_name])
+    
+    # Observed anomalies (always for all 3 vars — reference data)
+    for var_name in ALL_OUTPUT_NAMES:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_obs_anomaly'] = (['profile', 'depth'], obs_anom[var_name])
+    
+    # Predicted anomalies (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_pred_anomaly'] = (['profile', 'depth'], pred_anom[var_name])
+    
+    # Observed full profiles (always for all 3 vars — reference data)
+    for var_name in ALL_OUTPUT_NAMES:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_obs_insitu'] = (['profile', 'depth'], obs_padded[var_name])
+    
+    # Predicted full profiles (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_pred'] = (['profile', 'depth'], pred_full[var_name])
+    
+    # Uncertainty (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_uncertainty'] = (['profile', 'depth'],
+            unc[var_name] if var_name in unc else np.full((n_profiles, max_length), np.nan))
+    
+    # CI margins (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_ci_lower_margin'] = (['profile', 'depth'],
+            ci_lower_margins[var_name] if var_name in ci_lower_margins else np.full((n_profiles, max_length), np.nan))
+        data_vars[f'{p}_ci_upper_margin'] = (['profile', 'depth'],
+            ci_upper_margins[var_name] if var_name in ci_upper_margins else np.full((n_profiles, max_length), np.nan))
+    
+    # Uncertainty averaged over dimensions (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_uncertainty_profile'] = (['profile'],
+            unc_prof[var_name] if var_name in unc_prof else np.full(n_profiles, np.nan))
+        data_vars[f'{p}_uncertainty_depth'] = (['depth'],
+            unc_depth[var_name] if var_name in unc_depth else np.full(len(depth_array), np.nan))
+    
+    # Prediction errors and RMSE (only enabled outputs)
+    for var_name in output_idx:
+        p = OUTPUT_META[var_name]['prefix']
+        if var_name in errors_data:
+            data_vars[f'{p}_error'] = (['profile', 'depth'], errors_data[var_name])
+            data_vars[f'{p}_rmse_profile'] = (['profile'], rmse_prof_data[var_name])
+            data_vars[f'{p}_rmse_depth'] = (['depth'], rmse_depth_data[var_name])
+    
+    # GLORYS errors and RMSE (always for all 3 vars — baseline comparison)
+    for var_name in ALL_OUTPUT_NAMES:
+        p = OUTPUT_META[var_name]['prefix']
+        data_vars[f'{p}_glorys_error'] = (['profile', 'depth'], glorys_errors[var_name])
+        data_vars[f'{p}_glorys_rmse_profile'] = (['profile'], glorys_rmse_prof[var_name])
+        data_vars[f'{p}_glorys_rmse_depth'] = (['depth'], glorys_rmse_depth[var_name])
+    
+    # Metadata
+    data_vars['LATITUDE'] = (['profile'], metadata['latitude'])
+    data_vars['LONGITUDE'] = (['profile'], metadata['longitude'])
+    data_vars['X_EASE'] = (['profile'], metadata['x_ease'])
+    data_vars['Y_EASE'] = (['profile'], metadata['y_ease'])
+    data_vars['TIME'] = (['profile'], metadata['time'])
+    data_vars['day_of_year'] = (['profile'], metadata['day_of_year'])
+    
+    # Build global attributes
+    global_attrs = {
+        'title': 'LSTM Model Test Results with Monte Carlo Dropout Uncertainty',
+        'description': 'Comprehensive results including climatology, anomalies (MC Dropout mean predictions), full profiles, error statistics, and MC Dropout uncertainty estimates with confidence interval margins. All predictions are means over MC Dropout samples.',
+        'model_architecture': f"LSTM {'-'.join(map(str, Config.LSTM_UNITS))}",
+        'test_data_file': Config.TEST_FILE,
+        'MC_dropout_samples': Config.N_MC_SAMPLES,
+        'MC_confidence_level': Config.MC_CONFIDENCE_LEVEL,
+        'output_variables': str(list(output_idx.keys())),
+        'RMSEs_sum': float(error_stats['rmse_sum']),
+        'n_test_profiles': n_profiles,
+        'n_depth_levels': len(depth_array),
+    }
+    
+    # Add per-variable RMSE to global attrs (only enabled outputs)
+    for i, var_name in enumerate(output_names):
+        p = OUTPUT_META[var_name]['prefix']
+        global_attrs[f'{p}_rmse_total'] = float(error_stats['rmse_total'][i])
     
     # Create dataset
     ds_results = xr.Dataset(
-        {
-            # ================== GLORYS ==================
-            'T_glorys': (['profile', 'depth'], T_glorys_padded),
-            'S_glorys': (['profile', 'depth'], S_glorys_padded),
-            'SH_glorys': (['profile', 'depth'], SH_glorys_padded),
-            
-            # ================== ANOMALIES ==================
-            # Observed anomalies
-            'T_obs_anomaly': (['profile', 'depth'], T_obs_anom),
-            'S_obs_anomaly': (['profile', 'depth'], S_obs_anom),
-            'SH_obs_anomaly': (['profile', 'depth'], SH_obs_anom),
-            
-            # Predicted anomalies
-            'T_pred_anomaly': (['profile', 'depth'], T_pred_anom),
-            'S_pred_anomaly': (['profile', 'depth'], S_pred_anom),
-            'SH_pred_anomaly': (['profile', 'depth'], SH_pred_anom),
-            
-            # ================== FULL PROFILES ==================
-            # Observed full profiles (in-situ)
-            'T_obs_insitu': (['profile', 'depth'], T_obs),
-            'S_obs_insitu': (['profile', 'depth'], S_obs),
-            'SH_obs_insitu': (['profile', 'depth'], SH_obs),
-            
-            # Predicted full profiles  
-            'T_pred': (['profile', 'depth'], T_pred),
-            'S_pred': (['profile', 'depth'], S_pred),
-            'SH_pred': (['profile', 'depth'], SH_pred),
-            
-            # ================== UNCERTAINTY ESTIMATES ==================
-            # Predictive uncertainty (std dev across MC samples)
-            'T_uncertainty': (['profile', 'depth'], T_uncertainty if y_uncertainty is not None else np.full_like(T_pred, np.nan)),
-            'S_uncertainty': (['profile', 'depth'], S_uncertainty if y_uncertainty is not None else np.full_like(S_pred, np.nan)),
-            'SH_uncertainty': (['profile', 'depth'], SH_uncertainty if y_uncertainty is not None else np.full_like(SH_pred, np.nan)),
-            
-            # 95% Confidence interval margins (to add/subtract from predictions)
-            'T_ci_lower_margin': (['profile', 'depth'], T_ci_lower_margin if T_ci_lower_margin is not None else np.full_like(T_pred, np.nan)),
-            'T_ci_upper_margin': (['profile', 'depth'], T_ci_upper_margin if T_ci_upper_margin is not None else np.full_like(T_pred, np.nan)),
-            'S_ci_lower_margin': (['profile', 'depth'], S_ci_lower_margin if S_ci_lower_margin is not None else np.full_like(S_pred, np.nan)),
-            'S_ci_upper_margin': (['profile', 'depth'], S_ci_upper_margin if S_ci_upper_margin is not None else np.full_like(S_pred, np.nan)),
-            'SH_ci_lower_margin': (['profile', 'depth'], SH_ci_lower_margin if SH_ci_lower_margin is not None else np.full_like(SH_pred, np.nan)),
-            'SH_ci_upper_margin': (['profile', 'depth'], SH_ci_upper_margin if SH_ci_upper_margin is not None else np.full_like(SH_pred, np.nan)),
-            
-            # Averaged uncertainties (mean std dev)
-            'T_uncertainty_profile': (['profile'], T_uncertainty_prof if T_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
-            'S_uncertainty_profile': (['profile'], S_uncertainty_prof if S_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
-            'SH_uncertainty_profile': (['profile'], SH_uncertainty_prof if SH_uncertainty_prof is not None else np.full(n_profiles, np.nan)),
-            
-            'T_uncertainty_depth': (['depth'], T_uncertainty_depth if T_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
-            'S_uncertainty_depth': (['depth'], S_uncertainty_depth if S_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
-            'SH_uncertainty_depth': (['depth'], SH_uncertainty_depth if SH_uncertainty_depth is not None else np.full(len(depth_array), np.nan)),
-            
-            # ================== ERROR STATISTICS ==================
-            # Error fields (predicted - observed anomalies)
-            'T_error': (['profile', 'depth'], T_errors),
-            'S_error': (['profile', 'depth'], S_errors),
-            'SH_error': (['profile', 'depth'], SH_errors),
-            
-            # RMSE by profile
-            'T_rmse_profile': (['profile'], T_rmse_prof),
-            'S_rmse_profile': (['profile'], S_rmse_prof),
-            'SH_rmse_profile': (['profile'], SH_rmse_prof),
-            
-            # RMSE by depth
-            'T_rmse_depth': (['depth'], T_rmse_depth),
-            'S_rmse_depth': (['depth'], S_rmse_depth),
-            'SH_rmse_depth': (['depth'], SH_rmse_depth),
-            
-            # ================== GLORYS ERROR STATISTICS ==================
-            # GLORYS error fields (GLORYS - observed full profiles)
-            'T_glorys_error': (['profile', 'depth'], T_glorys_errors),
-            'S_glorys_error': (['profile', 'depth'], S_glorys_errors),
-            'SH_glorys_error': (['profile', 'depth'], SH_glorys_errors),
-            
-            # GLORYS RMSE by profile
-            'T_glorys_rmse_profile': (['profile'], T_glorys_rmse_prof),
-            'S_glorys_rmse_profile': (['profile'], S_glorys_rmse_prof),
-            'SH_glorys_rmse_profile': (['profile'], SH_glorys_rmse_prof),
-            
-            # GLORYS RMSE by depth
-            'T_glorys_rmse_depth': (['depth'], T_glorys_rmse_depth),
-            'S_glorys_rmse_depth': (['depth'], S_glorys_rmse_depth),
-            'SH_glorys_rmse_depth': (['depth'], SH_glorys_rmse_depth),
-            
-            # ================== METADATA ==================
-            'LATITUDE': (['profile'], metadata['latitude']),
-            'LONGITUDE': (['profile'], metadata['longitude']),
-            'X_EASE': (['profile'], metadata['x_ease']),
-            'Y_EASE': (['profile'], metadata['y_ease']),
-            'TIME': (['profile'], metadata['time']),
-            'day_of_year': (['profile'], metadata['day_of_year']),
-        },
+        data_vars,
         coords={
             'profile': range(n_profiles),
             'depth': depth_array,
         },
-        attrs={
-            'title': 'LSTM Model Test Results with Monte Carlo Dropout Uncertainty',
-            'description': 'Comprehensive results including climatology, anomalies (MC Dropout mean predictions), full profiles, error statistics, and MC Dropout uncertainty estimates with confidence interval margins. All predictions are means over MC Dropout samples.',
-            'model_architecture': f"LSTM {'-'.join(map(str, Config.LSTM_UNITS))}",
-            'test_data_file': Config.TEST_FILE,
-            'MC_dropout_samples': Config.N_MC_SAMPLES,
-            'MC_confidence_level': Config.MC_CONFIDENCE_LEVEL,
-            'T_rmse_total': float(error_stats['rmse_total'][1]),
-            'S_rmse_total': float(error_stats['rmse_total'][2]),
-            'SH_rmse_total': float(error_stats['rmse_total'][0]),
-            'RMSEs_sum': float(error_stats['rmse_sum']),
-            'n_test_profiles': n_profiles,
-            'n_depth_levels': len(depth_array),
-        }
+        attrs=global_attrs
     )
     
     # Add augmentation variables if they exist
@@ -1479,7 +1457,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     if metadata['time'] is not None:
         ds_results['TIME'] = (['profile'], metadata['time'])
     
-    # Add bathymetry information if available
+    # Add variable-length metadata if applicable
     if test_data.get('variable_lengths', False):
         ds_results['max_depth_idx'] = (['profile'], test_data['max_depth_idx'])
         ds_results['profile_lengths'] = (['profile'], lengths)
@@ -1488,76 +1466,63 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     
     # ================== VARIABLE ATTRIBUTES ==================
     
-    # Climatology attributes
-    ds_results['T_glorys'].attrs = {'long_name': 'GLORYS Temperature Climatology', 'units': 'degree_C'}
-    ds_results['S_glorys'].attrs = {'long_name': 'GLORYS Salinity Climatology', 'units': '1'}
-    ds_results['SH_glorys'].attrs = {'long_name': 'GLORYS Steric Height Climatology', 'units': 'm'}
-    
-    # Anomaly attributes
-    ds_results['T_obs_anomaly'].attrs = {'long_name': 'Observed Temperature Anomaly (in-situ - climatology)', 'units': 'degree_C'}
-    ds_results['S_obs_anomaly'].attrs = {'long_name': 'Observed Salinity Anomaly (in-situ - climatology)', 'units': '1'}
-    ds_results['SH_obs_anomaly'].attrs = {'long_name': 'Observed Steric Height Anomaly (in-situ - climatology)', 'units': 'm'}
-    
-    ds_results['T_pred_anomaly'].attrs = {'long_name': 'Predicted Temperature Anomaly (MC Dropout mean)', 'units': 'degree_C'}
-    ds_results['S_pred_anomaly'].attrs = {'long_name': 'Predicted Salinity Anomaly (MC Dropout mean)', 'units': '1'}  
-    ds_results['SH_pred_anomaly'].attrs = {'long_name': 'Predicted Steric Height Anomaly (MC Dropout mean)', 'units': 'm'}
-    
-    # Full profile attributes
-    ds_results['T_obs_insitu'].attrs = {'long_name': 'Observed Temperature (in-situ)', 'units': 'degree_C'}
-    ds_results['S_obs_insitu'].attrs = {'long_name': 'Observed Salinity (in-situ)', 'units': '1'}
-    ds_results['SH_obs_insitu'].attrs = {'long_name': 'Observed Steric Height (in-situ)', 'units': 'm'}
-    
-    ds_results['T_pred'].attrs = {'long_name': 'Predicted Temperature (MC Dropout mean)', 'units': 'degree_C'}
-    ds_results['S_pred'].attrs = {'long_name': 'Predicted Salinity (MC Dropout mean)', 'units': '1'}
-    ds_results['SH_pred'].attrs = {'long_name': 'Predicted Steric Height (MC Dropout mean)', 'units': 'm'}
-    
-    # Uncertainty attributes
-    ds_results['T_uncertainty'].attrs = {'long_name': 'Temperature Prediction Uncertainty (MC Dropout std)', 'units': 'degree_C'}
-    ds_results['S_uncertainty'].attrs = {'long_name': 'Salinity Prediction Uncertainty (MC Dropout std)', 'units': '1'}
-    ds_results['SH_uncertainty'].attrs = {'long_name': 'Steric Height Prediction Uncertainty (MC Dropout std)', 'units': 'm'}
-    
-    # Confidence interval margin attributes
-    ds_results['T_ci_lower_margin'].attrs = {'long_name': 'Temperature 95% CI Lower Margin (to subtract from prediction)', 'units': 'degree_C'}
-    ds_results['T_ci_upper_margin'].attrs = {'long_name': 'Temperature 95% CI Upper Margin (to add to prediction)', 'units': 'degree_C'}
-    ds_results['S_ci_lower_margin'].attrs = {'long_name': 'Salinity 95% CI Lower Margin (to subtract from prediction)', 'units': '1'}
-    ds_results['S_ci_upper_margin'].attrs = {'long_name': 'Salinity 95% CI Upper Margin (to add to prediction)', 'units': '1'}
-    ds_results['SH_ci_lower_margin'].attrs = {'long_name': 'Steric Height 95% CI Lower Margin (to subtract from prediction)', 'units': 'm'}
-    ds_results['SH_ci_upper_margin'].attrs = {'long_name': 'Steric Height 95% CI Upper Margin (to add to prediction)', 'units': 'm'}
-    
-    # Averaged uncertainty attributes
-    ds_results['T_uncertainty_profile'].attrs = {'long_name': 'Temperature Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': 'degree_C'}
-    ds_results['S_uncertainty_profile'].attrs = {'long_name': 'Salinity Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': '1'}
-    ds_results['SH_uncertainty_profile'].attrs = {'long_name': 'Steric Height Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': 'm'}
-    
-    ds_results['T_uncertainty_depth'].attrs = {'long_name': 'Temperature Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': 'degree_C'}
-    ds_results['S_uncertainty_depth'].attrs = {'long_name': 'Salinity Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': '1'}
-    ds_results['SH_uncertainty_depth'].attrs = {'long_name': 'Steric Height Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': 'm'}
-    
-    # Error attributes
-    ds_results['T_error'].attrs = {'long_name': 'Temperature Error (MC Dropout mean prediction - observed anomaly)', 'units': 'degree_C'}
-    ds_results['S_error'].attrs = {'long_name': 'Salinity Error (MC Dropout mean prediction - observed anomaly)', 'units': '1'}
-    ds_results['SH_error'].attrs = {'long_name': 'Steric Height Error (MC Dropout mean prediction - observed anomaly)', 'units': 'm'}
-    
-    ds_results['T_rmse_profile'].attrs = {'long_name': 'Temperature RMSE by profile (MC Dropout mean vs observed)', 'units': 'degree_C'}
-    ds_results['S_rmse_profile'].attrs = {'long_name': 'Salinity RMSE by profile (MC Dropout mean vs observed)', 'units': '1'}
-    ds_results['SH_rmse_profile'].attrs = {'long_name': 'Steric Height RMSE by profile (MC Dropout mean vs observed)', 'units': 'm'}
-    
-    ds_results['T_rmse_depth'].attrs = {'long_name': 'Temperature RMSE by depth (MC Dropout mean vs observed)', 'units': 'degree_C'}
-    ds_results['S_rmse_depth'].attrs = {'long_name': 'Salinity RMSE by depth (MC Dropout mean vs observed)', 'units': '1'}
-    ds_results['SH_rmse_depth'].attrs = {'long_name': 'Steric Height RMSE by depth (MC Dropout mean vs observed)', 'units': 'm'}
-    
-    # Climatology error attributes
-    ds_results['T_glorys_error'].attrs = {'long_name': 'Temperature Climatology Error (climatology - observed)', 'units': 'degree_C'}
-    ds_results['S_glorys_error'].attrs = {'long_name': 'Salinity Climatology Error (climatology - observed)', 'units': '1'}
-    ds_results['SH_glorys_error'].attrs = {'long_name': 'Steric Height Climatology Error (climatology - observed)', 'units': 'm'}
-    
-    ds_results['T_glorys_rmse_profile'].attrs = {'long_name': 'Temperature Climatology RMSE by profile', 'units': 'degree_C'}
-    ds_results['S_glorys_rmse_profile'].attrs = {'long_name': 'Salinity Climatology RMSE by profile', 'units': '1'}
-    ds_results['SH_glorys_rmse_profile'].attrs = {'long_name': 'Steric Height Climatology RMSE by profile', 'units': 'm'}
-    
-    ds_results['T_glorys_rmse_depth'].attrs = {'long_name': 'Temperature Climatology RMSE by depth', 'units': 'degree_C'}
-    ds_results['S_glorys_rmse_depth'].attrs = {'long_name': 'Salinity Climatology RMSE by depth', 'units': '1'}
-    ds_results['SH_glorys_rmse_depth'].attrs = {'long_name': 'Steric Height Climatology RMSE by depth', 'units': 'm'}
+    for var_name in ALL_OUTPUT_NAMES:
+        meta = OUTPUT_META[var_name]
+        p = meta['prefix']
+        ln = meta['long_name']
+        u = meta['units']
+        
+        # Climatology (always present)
+        if f'{p}_glorys' in ds_results:
+            ds_results[f'{p}_glorys'].attrs = {'long_name': f'GLORYS {ln} Climatology', 'units': u}
+        
+        # Observed anomalies (always present)
+        if f'{p}_obs_anomaly' in ds_results:
+            ds_results[f'{p}_obs_anomaly'].attrs = {'long_name': f'Observed {ln} Anomaly (in-situ - climatology)', 'units': u}
+        
+        # Observed full profiles (always present)
+        if f'{p}_obs_insitu' in ds_results:
+            ds_results[f'{p}_obs_insitu'].attrs = {'long_name': f'Observed {ln} (in-situ)', 'units': u}
+        
+        # Predicted anomalies (only if enabled)
+        if f'{p}_pred_anomaly' in ds_results:
+            ds_results[f'{p}_pred_anomaly'].attrs = {'long_name': f'Predicted {ln} Anomaly (MC Dropout mean)', 'units': u}
+        
+        # Predicted full profiles (only if enabled)
+        if f'{p}_pred' in ds_results:
+            ds_results[f'{p}_pred'].attrs = {'long_name': f'Predicted {ln} (MC Dropout mean)', 'units': u}
+        
+        # Uncertainty (only if enabled)
+        if f'{p}_uncertainty' in ds_results:
+            ds_results[f'{p}_uncertainty'].attrs = {'long_name': f'{ln} Prediction Uncertainty (MC Dropout std)', 'units': u}
+        
+        # CI margins (only if enabled)
+        if f'{p}_ci_lower_margin' in ds_results:
+            ds_results[f'{p}_ci_lower_margin'].attrs = {'long_name': f'{ln} 95% CI Lower Margin (to subtract from prediction)', 'units': u}
+        if f'{p}_ci_upper_margin' in ds_results:
+            ds_results[f'{p}_ci_upper_margin'].attrs = {'long_name': f'{ln} 95% CI Upper Margin (to add to prediction)', 'units': u}
+        
+        # Uncertainty averaged (only if enabled)
+        if f'{p}_uncertainty_profile' in ds_results:
+            ds_results[f'{p}_uncertainty_profile'].attrs = {'long_name': f'{ln} Uncertainty Averaged Over Depth (MC Dropout mean std)', 'units': u}
+        if f'{p}_uncertainty_depth' in ds_results:
+            ds_results[f'{p}_uncertainty_depth'].attrs = {'long_name': f'{ln} Uncertainty Averaged Over Profiles (MC Dropout mean std)', 'units': u}
+        
+        # Errors (only if enabled)
+        if f'{p}_error' in ds_results:
+            ds_results[f'{p}_error'].attrs = {'long_name': f'{ln} Error (MC Dropout mean prediction - observed anomaly)', 'units': u}
+        if f'{p}_rmse_profile' in ds_results:
+            ds_results[f'{p}_rmse_profile'].attrs = {'long_name': f'{ln} RMSE by profile (MC Dropout mean vs observed)', 'units': u}
+        if f'{p}_rmse_depth' in ds_results:
+            ds_results[f'{p}_rmse_depth'].attrs = {'long_name': f'{ln} RMSE by depth (MC Dropout mean vs observed)', 'units': u}
+        
+        # GLORYS errors (always present)
+        if f'{p}_glorys_error' in ds_results:
+            ds_results[f'{p}_glorys_error'].attrs = {'long_name': f'{ln} Climatology Error (climatology - observed)', 'units': u}
+        if f'{p}_glorys_rmse_profile' in ds_results:
+            ds_results[f'{p}_glorys_rmse_profile'].attrs = {'long_name': f'{ln} Climatology RMSE by profile', 'units': u}
+        if f'{p}_glorys_rmse_depth' in ds_results:
+            ds_results[f'{p}_glorys_rmse_depth'].attrs = {'long_name': f'{ln} Climatology RMSE by depth', 'units': u}
     
     # Augmentation variable attributes
     if 'TEMP_aug_fraction' in ds_results:
@@ -1569,33 +1534,16 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     if 'PSAL_augs' in ds_results:
         ds_results['PSAL_augs'].attrs = {'long_name': 'Salinity Augmentations', 'units': '1'}
     
-    # Metadata attributes (add these after the existing attribute assignments)
+    # Metadata attributes
     if 'LATITUDE' in ds_results:
         ds_results['LATITUDE'].attrs = {'long_name': 'Profile Latitude', 'units': 'degrees_north'}
     if 'LONGITUDE' in ds_results:
         ds_results['LONGITUDE'].attrs = {'long_name': 'Profile Longitude', 'units': 'degrees_east'}
-    
-    # Augmentation variable attributes
-    if 'TEMP_aug_fraction' in ds_results:
-        ds_results['TEMP_aug_fraction'].attrs = {'long_name': 'Temperature Augmentation Fraction', 'units': '1'}
-    if 'PSAL_aug_fraction' in ds_results:
-        ds_results['PSAL_aug_fraction'].attrs = {'long_name': 'Salinity Augmentation Fraction', 'units': '1'}
-    if 'TEMP_augs' in ds_results:
-        ds_results['TEMP_augs'].attrs = {'long_name': 'Temperature Augmentations', 'units': '1'}
-    if 'PSAL_augs' in ds_results:
-        ds_results['PSAL_augs'].attrs = {'long_name': 'Salinity Augmentations', 'units': '1'}
-    
-    # Metadata attributes (add these after the existing attribute assignments)
-    if 'LATITUDE' in ds_results:
-        ds_results['LATITUDE'].attrs = {'long_name': 'Profile Latitude', 'units': 'degrees_north'}
-    if 'LONGITUDE' in ds_results:
-        ds_results['LONGITUDE'].attrs = {'long_name': 'Profile Longitude', 'units': 'degrees_east'}
-    if 'X_EASE' in ds_results:    
+    if 'X_EASE' in ds_results:
         ds_results['X_EASE'].attrs = {'long_name': 'EASE Grid X Coordinate', 'units': 'm'}
-    if 'Y_EASE' in ds_results:    
+    if 'Y_EASE' in ds_results:
         ds_results['Y_EASE'].attrs = {'long_name': 'EASE Grid Y Coordinate', 'units': 'm'}
     if 'TIME' in ds_results:
-        # Copy original TIME attributes from source dataset
         if metadata.get('time_attrs'):
             ds_results['TIME'].attrs = metadata['time_attrs']
         else:
@@ -1786,6 +1734,15 @@ def prepare_dataset(ds, dataset_type):
             input_arrays.append(var_array)
             input_names.append(var_name)
     
+    # Build output arrays based on enabled output variables
+    output_arrays_map = {
+        'temperature': T_anom,
+        'salinity': S_anom,
+        'steric_height': SH_anom,
+    }
+    enabled_outputs = Config.get_enabled_output_vars()
+    output_arrays = [output_arrays_map[name] for name in enabled_outputs]
+    
     # Handle variable vs fixed length sequences
     if use_variable_lengths:
         # For variable lengths, we'll store as lists initially
@@ -1802,7 +1759,7 @@ def prepare_dataset(ds, dataset_type):
             
             # Extract profile data up to bathymetry depth
             profile_X = np.stack([arr[i, :profile_length] for arr in input_arrays], axis=1)
-            profile_y = np.stack([SH_anom[i, :profile_length], T_anom[i, :profile_length], S_anom[i, :profile_length]], axis=1)
+            profile_y = np.stack([output_arrays_map[name][i, :profile_length] for name in enabled_outputs], axis=1)
             
             X_list.append(profile_X)
             y_list.append(profile_y)
@@ -1812,6 +1769,7 @@ def prepare_dataset(ds, dataset_type):
             'y': y_list,  # List of variable-length sequences
             'lengths': lengths,  # Sequence lengths for pack_padded_sequence
             'input_names': input_names,
+            'output_names': enabled_outputs,
             'variable_lengths': True,
             'max_depth_idx': max_depth_idx,
             'last_valid_idx': last_valid_idx,
@@ -1845,12 +1803,13 @@ def prepare_dataset(ds, dataset_type):
     else:
         # Fixed length sequences (original behavior)
         X = np.stack(input_arrays, axis=2)  # [profiles, depth, variables]
-        y = np.stack([SH_anom, T_anom, S_anom], axis=2)  # [profiles, depth, variables]
+        y = np.stack(output_arrays, axis=2)  # [profiles, depth, variables]
         
         return {
             'X': X,
             'y': y,
             'input_names': input_names,
+            'output_names': enabled_outputs,
             'variable_lengths': False,
             'climatology': {
                 'T_glorys': T_glorys,
