@@ -11,11 +11,16 @@ in-situ measurements using PyTorch.
 
 Combines training and testing in a single script with clean organization.
 
-AUTHOR: 
-Bruno Buongiorno Nardelli (adapted to PyTorch)
+AUTHOR:
+Bruno Buongiorno Nardelli (original implementation)
 Consiglio Nazionale delle Ricerche
 Istituto di Scienze Marine
 Napoli, Italia
+
+Nicolas Werner Pelletier (transition to pytorch, refactoring, improvements, generalization and documentation)
+Institut de les Ciències del Mar (ICM-CSIC)
+Barcelona, España
+
 """
 
 import os
@@ -461,7 +466,10 @@ def run_training():
     train_loader, dev_loader = create_data_loaders(train_data, dev_data, batch_size=Config.BATCH_SIZE)
     
     # Train model
+    training_start_time = time.time()
     model, train_losses, dev_losses, stopped_epoch = train_model(model, train_loader, dev_loader, device)
+    training_time = time.time() - training_start_time
+    print(f"Total training time: {training_time:.1f} seconds ({training_time/3600:.2f} hours)")
     
     # Plot training history
     plot_training_history(train_losses, dev_losses, stopped_epoch)
@@ -495,7 +503,8 @@ def run_training():
             'input_size': n_input_vars,
             'output_size': n_output_vars,
             'lstm_units': Config.LSTM_UNITS
-        }
+        },
+        'training_time_seconds': training_time
     }, Path(Config.MODEL_DIR) / 'model.pth')
     
     print(f"\nTraining completed!")
@@ -555,7 +564,10 @@ def run_testing():
         print(f"Test data: {test_data['X'].shape[0]} profiles, {test_data['X'].shape[1]} depths")
     
     # Make predictions with uncertainty estimation
+    mc_prediction_start_time = time.time()
     y_pred, y_uncertainty, y_ci_lower, y_ci_upper = make_predictions(model, test_data, norm_params, device)
+    mc_prediction_time = time.time() - mc_prediction_start_time
+    print(f"Total MC prediction time: {mc_prediction_time:.1f} seconds ({mc_prediction_time/3600:.2f} hours)")
     
     # Compute error statistics
     error_stats = compute_error_statistics(y_pred, test_data['y'], test_data)
@@ -567,8 +579,16 @@ def run_testing():
     print(f"Salinity: {error_stats['rmse_total'][2]:.3f} PSU")
     print(f"Sum of RMSEs: {error_stats['rmse_sum']:.3f}")
     
+    # Retrieve training time from checkpoint if available
+    training_time = checkpoint.get('training_time_seconds', None)
+    
     # Create comprehensive results dataset with uncertainty
     ds_results = create_results_dataset(test_data, y_pred, error_stats, y_uncertainty, y_ci_lower, y_ci_upper)
+    
+    # Add timing attributes
+    if training_time is not None:
+        ds_results.attrs['training_time_seconds'] = float(training_time)
+    ds_results.attrs['mc_prediction_time_seconds'] = float(mc_prediction_time)
     
     # Save results
     results_file = Path(Config.MODEL_DIR) / 'mc_test_results.nc'

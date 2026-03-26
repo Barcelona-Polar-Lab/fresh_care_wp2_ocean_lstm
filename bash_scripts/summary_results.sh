@@ -32,7 +32,16 @@ for dir in $(find /data/FRESH-CARE/data_for_LSTM/models -maxdepth 1 -type d -nam
             sh_rmse_fmt=$(printf "%.4f" "$sh_rmse")
             rmse_sum_fmt=$(printf "%.4f" "$rmse_sum")
             
-            printf "%-20s  T: %-7s   S: %-7s   SH: %-7s   Sum: %-7s\n" "$dir_name" "$t_rmse_fmt" "$s_rmse_fmt" "$sh_rmse_fmt" "$rmse_sum_fmt"
+            # Extract training time if available
+            train_time=$(ncdump -h "$results_file" 2>/dev/null | grep ":training_time_seconds" | awk -F' = ' '{print $2}' | sed 's/ ;//')
+            if [ -n "$train_time" ]; then
+                train_hrs=$(printf "%.2f" "$(echo "$train_time / 3600" | bc -l)")
+                train_time_str="${train_hrs}h"
+            else
+                train_time_str="N/A"
+            fi
+            
+            printf "%-20s  T: %-7s   S: %-7s   SH: %-7s   Sum: %-7s   Train: %-8s\n" "$dir_name" "$t_rmse_fmt" "$s_rmse_fmt" "$sh_rmse_fmt" "$rmse_sum_fmt" "$train_time_str"
         else
             printf "%-20s  Could not extract RMSE values\n" "$dir_name"
         fi
