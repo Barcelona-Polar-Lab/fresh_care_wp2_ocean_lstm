@@ -609,8 +609,20 @@ def run_testing():
     mc_prediction_time = time.time() - mc_prediction_start_time
     print(f"Total MC prediction time: {mc_prediction_time:.1f} seconds ({mc_prediction_time/3600:.2f} hours)")
     
+    # Build real data mask once — used consistently by both error statistics and GLORYS baseline
+    real_data_mask = None
+    if (Config.TEST_REAL_DATA_ONLY and
+            test_data['augmentation']['TEMP_augs'] is not None and
+            test_data['augmentation']['PSAL_augs'] is not None):
+        temp_real = (test_data['augmentation']['TEMP_augs'] == 0)
+        psal_real = (test_data['augmentation']['PSAL_augs'] == 0)
+        real_data_mask = temp_real & psal_real
+        n_real = np.sum(real_data_mask)
+        n_total = real_data_mask.size
+        print(f"Testing on real data only: {n_real}/{n_total} depth points ({100*n_real/n_total:.1f}%)")
+
     # Compute error statistics
-    error_stats = compute_error_statistics(y_pred, test_data['y'], test_data)
+    error_stats = compute_error_statistics(y_pred, test_data['y'], test_data, real_data_mask)
     
     # Print overall RMSE
     output_names = test_data.get('output_names', Config.get_enabled_output_vars())
@@ -624,7 +636,7 @@ def run_testing():
     training_time = checkpoint.get('training_time_seconds', None)
     
     # Create comprehensive results dataset with uncertainty
-    ds_results = create_results_dataset(test_data, y_pred, error_stats, y_uncertainty, y_ci_lower, y_ci_upper)
+    ds_results = create_results_dataset(test_data, y_pred, error_stats, y_uncertainty, y_ci_lower, y_ci_upper, real_data_mask)
     
     # Add timing attributes
     if training_time is not None:
@@ -1027,25 +1039,10 @@ def make_predictions(model, test_data, norm_params, device):
     
     return y_pred, y_uncertainty, y_ci_lower, y_ci_upper
 
-def compute_error_statistics(y_pred, y_true, test_data=None):
+def compute_error_statistics(y_pred, y_true, test_data=None, real_data_mask=None):
     """Compute comprehensive error statistics for both fixed and variable-length sequences"""
     
     print("Computing error statistics...")
-    
-    # Create mask for real (non-augmented) data if requested
-    real_data_mask = None
-    if (Config.TEST_REAL_DATA_ONLY and 
-        test_data and 
-        test_data['augmentation']['TEMP_augs'] is not None and 
-        test_data['augmentation']['PSAL_augs'] is not None):
-        # Mask: True where data is real (augs == 0 for both T and S)
-        temp_real = (test_data['augmentation']['TEMP_augs'] == 0)
-        psal_real = (test_data['augmentation']['PSAL_augs'] == 0)
-        real_data_mask = temp_real & psal_real
-        
-        n_real = np.sum(real_data_mask)
-        n_total = real_data_mask.size
-        print(f"Testing on real data only: {n_real}/{n_total} depth points ({100*n_real/n_total:.1f}%)")
     
     if test_data and test_data.get('variable_lengths', False):
         # Variable-length sequences: need to handle different lengths
@@ -1177,7 +1174,7 @@ def compute_error_statistics(y_pred, y_true, test_data=None):
             'has_variable_lengths': False
         }
 
-def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y_ci_lower=None, y_ci_upper=None):
+def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y_ci_lower=None, y_ci_upper=None, real_data_mask=None):
     """Create comprehensive results dataset with all profiles, statistics, and uncertainties.
     
     Dynamically includes only the output variables that were used for training/prediction.
@@ -1302,6 +1299,11 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         rmse_depth_data[var_name] = error_stats['rmse_depths'][:, i]
     
     # Compute GLORYS errors and RMSE (always for all 3 vars, independent of model)
+    # Truncate real_data_mask to this dataset's depth dimension once, outside the loop
+    glorys_mask = None
+    if real_data_mask is not None:
+        glorys_mask = real_data_mask[:, :max_length] if test_data.get('variable_lengths', False) else real_data_mask
+
     glorys_errors = {}
     glorys_rmse_prof = {}
     glorys_rmse_depth = {}
@@ -1311,11 +1313,27 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         if test_data.get('variable_lengths', False):
             glorys_rmse_prof[var_name] = np.full(n_profiles, np.nan)
             for i, length in enumerate(lengths):
-                glorys_rmse_prof[var_name][i] = np.sqrt(np.nanmean(glorys_errors[var_name][i, :length]**2))
-            glorys_rmse_depth[var_name] = np.sqrt(np.nanmean(glorys_errors[var_name]**2, axis=0))
+                err_i = glorys_errors[var_name][i, :length]
+                if glorys_mask is not None:
+                    profile_mask = glorys_mask[i, :length]
+                    if np.any(profile_mask):
+                        err_i = err_i[profile_mask]
+                    else:
+                        continue  # leave as NaN — no real data in this profile
+                glorys_rmse_prof[var_name][i] = np.sqrt(np.nanmean(err_i**2))
+            if glorys_mask is not None:
+                masked_err = np.where(glorys_mask, glorys_errors[var_name], np.nan)
+                glorys_rmse_depth[var_name] = np.sqrt(np.nanmean(masked_err**2, axis=0))
+            else:
+                glorys_rmse_depth[var_name] = np.sqrt(np.nanmean(glorys_errors[var_name]**2, axis=0))
         else:
-            glorys_rmse_prof[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=1))
-            glorys_rmse_depth[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=0))
+            if glorys_mask is not None:
+                masked_err = np.ma.masked_where(~glorys_mask, glorys_errors[var_name])
+                glorys_rmse_prof[var_name] = np.sqrt(np.mean(masked_err**2, axis=1))
+                glorys_rmse_depth[var_name] = np.sqrt(np.mean(masked_err**2, axis=0))
+            else:
+                glorys_rmse_prof[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=1))
+                glorys_rmse_depth[var_name] = np.sqrt(np.mean(glorys_errors[var_name]**2, axis=0))
     
     # Compute uncertainty statistics per enabled output variable
     unc_prof = {}
@@ -1424,6 +1442,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         'RMSEs_sum': float(error_stats['rmse_sum']),
         'n_test_profiles': n_profiles,
         'n_depth_levels': len(depth_array),
+        'glorys_rmse_real_data_only': real_data_mask is not None,
     }
     
     # Add per-variable RMSE to global attrs (only enabled outputs)
