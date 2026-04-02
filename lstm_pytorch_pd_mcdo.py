@@ -1442,7 +1442,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         'RMSEs_sum': float(error_stats['rmse_sum']),
         'n_test_profiles': n_profiles,
         'n_depth_levels': len(depth_array),
-        'glorys_rmse_real_data_only': real_data_mask is not None,
+        'glorys_rmse_real_data_only': int(real_data_mask is not None),
     }
     
     # Add per-variable RMSE to global attrs (only enabled outputs)
