@@ -78,7 +78,6 @@ class Config:
     
     # Monte Carlo Dropout parameters
     N_MC_SAMPLES = 500  # Number of forward passes for uncertainty estimation
-    MC_CONFIDENCE_LEVEL = 0.95  # Confidence level for intervals
     
     # Testing parameters
     TEST_REAL_DATA_ONLY = True  # Compute errors only on real (non-augmented) data points
@@ -604,7 +603,7 @@ def run_testing():
     
     # Make predictions with uncertainty estimation
     mc_prediction_start_time = time.time()
-    y_pred, y_uncertainty, y_ci_lower, y_ci_upper = make_predictions(model, test_data, norm_params, device)
+    y_pred, y_uncertainty = make_predictions(model, test_data, norm_params, device)
     mc_prediction_time = time.time() - mc_prediction_start_time
     print(f"Total MC prediction time: {mc_prediction_time:.1f} seconds ({mc_prediction_time/3600:.2f} hours)")
     
@@ -635,7 +634,7 @@ def run_testing():
     training_time = checkpoint.get('training_time_seconds', None)
     
     # Create comprehensive results dataset with uncertainty
-    ds_results = create_results_dataset(test_data, y_pred, error_stats, y_uncertainty, y_ci_lower, y_ci_upper, real_data_mask)
+    ds_results = create_results_dataset(test_data, y_pred, error_stats, y_uncertainty, real_data_mask)
     
     # Add timing attributes
     if training_time is not None:
@@ -914,19 +913,14 @@ def make_predictions(model, test_data, norm_params, device):
     
     Uses Welford's online algorithm to compute running mean and variance across
     MC samples, so only O(1) sample arrays are kept in memory at a time instead
-    of O(N_MC_SAMPLES). Confidence intervals are approximated from the normal
-    distribution (accurate for large sample counts like 500).
+    of O(N_MC_SAMPLES). Returns mean predictions and standard deviation.
+    Confidence intervals can be derived as mean ± z * std at any desired level.
     """
     
     print(f"Making MC Dropout predictions with {Config.N_MC_SAMPLES} samples...")
     
     # Keep model in training mode to enable dropout, but don't update weights
     model.train()
-    
-    # z-score for CI bounds (normal approximation, accurate at high sample counts)
-    from scipy.stats import norm as sp_norm
-    alpha = (1 - Config.MC_CONFIDENCE_LEVEL) / 2
-    z_score = sp_norm.ppf(1 - alpha)
     
     if test_data.get('variable_lengths', False):
         # Variable-length sequences: process individually or in small batches
@@ -996,16 +990,10 @@ def make_predictions(model, test_data, norm_params, device):
         # Extract per-profile results (only valid lengths)
         y_pred = []
         y_uncertainty = []
-        y_ci_lower = []
-        y_ci_upper = []
         
         for prof_idx, length in enumerate(lengths):
-            mean_prof = running_mean[prof_idx, :length, :]
-            std_prof = std_dev[prof_idx, :length, :]
-            y_pred.append(mean_prof)
-            y_uncertainty.append(std_prof)
-            y_ci_lower.append(mean_prof - z_score * std_prof)
-            y_ci_upper.append(mean_prof + z_score * std_prof)
+            y_pred.append(running_mean[prof_idx, :length, :])
+            y_uncertainty.append(std_dev[prof_idx, :length, :])
         
     else:
         # Fixed-length sequences
@@ -1042,10 +1030,8 @@ def make_predictions(model, test_data, norm_params, device):
         # Compute final statistics
         y_pred = running_mean
         y_uncertainty = np.sqrt(running_m2 / Config.N_MC_SAMPLES)
-        y_ci_lower = y_pred - z_score * y_uncertainty
-        y_ci_upper = y_pred + z_score * y_uncertainty
     
-    return y_pred, y_uncertainty, y_ci_lower, y_ci_upper
+    return y_pred, y_uncertainty
 
 def compute_error_statistics(y_pred, y_true, test_data=None, real_data_mask=None):
     """Compute comprehensive error statistics for both fixed and variable-length sequences"""
@@ -1182,7 +1168,7 @@ def compute_error_statistics(y_pred, y_true, test_data=None, real_data_mask=None
             'has_variable_lengths': False
         }
 
-def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y_ci_lower=None, y_ci_upper=None, real_data_mask=None):
+def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, real_data_mask=None):
     """Create comprehensive results dataset with all profiles, statistics, and uncertainties.
     
     Dynamically includes only the output variables that were used for training/prediction.
@@ -1235,11 +1221,9 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
                 padded[i, :length] = data_2d[i, :length]
             return padded
         
-        # Pad predictions, uncertainty, and CI
+        # Pad predictions and uncertainty
         y_pred_padded = pad_to_max_length_2d(y_pred)
         y_unc_padded = pad_to_max_length_2d(y_uncertainty) if y_uncertainty is not None else None
-        y_ci_low_padded = pad_to_max_length_2d(y_ci_lower) if y_ci_lower is not None else None
-        y_ci_up_padded = pad_to_max_length_2d(y_ci_upper) if y_ci_upper is not None else None
         
         # Pad climatology and full observed profiles (always all 3 vars)
         climatology_padded = {}
@@ -1255,8 +1239,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         n_profiles = y_pred.shape[0] if not isinstance(y_pred, list) else len(y_pred)
         y_pred_padded = np.array(y_pred) if isinstance(y_pred, list) else y_pred
         y_unc_padded = (np.array(y_uncertainty) if isinstance(y_uncertainty, list) else y_uncertainty) if y_uncertainty is not None else None
-        y_ci_low_padded = (np.array(y_ci_lower) if isinstance(y_ci_lower, list) else y_ci_lower) if y_ci_lower is not None else None
-        y_ci_up_padded = (np.array(y_ci_upper) if isinstance(y_ci_upper, list) else y_ci_upper) if y_ci_upper is not None else None
         
         climatology_padded = {}
         obs_padded = {}
@@ -1273,22 +1255,16 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     for var_name in ALL_OUTPUT_NAMES:
         obs_anom[var_name] = obs_padded[var_name] - climatology_padded[var_name]
     
-    # Extract per-variable predictions, full profiles, uncertainty, and CI
+    # Extract per-variable predictions, full profiles, and uncertainty
     pred_anom = {}
     pred_full = {}
     unc = {}
-    ci_lower_data = {}
-    ci_upper_data = {}
     
     for var_name, idx in output_idx.items():
         pred_anom[var_name] = y_pred_padded[:, :, idx]
         pred_full[var_name] = pred_anom[var_name] + climatology_padded[var_name]
         if y_unc_padded is not None:
             unc[var_name] = y_unc_padded[:, :, idx]
-        if y_ci_low_padded is not None:
-            ci_lower_data[var_name] = y_ci_low_padded[:, :, idx]
-        if y_ci_up_padded is not None:
-            ci_upper_data[var_name] = y_ci_up_padded[:, :, idx]
     
     # Extract error statistics per enabled output variable
     errors_data = {}
@@ -1339,8 +1315,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
     # Compute uncertainty statistics per enabled output variable
     unc_prof = {}
     unc_depth = {}
-    ci_lower_margins = {}
-    ci_upper_margins = {}
     
     for var_name in output_idx:
         if var_name in unc:
@@ -1352,10 +1326,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
             else:
                 unc_prof[var_name] = np.mean(unc[var_name], axis=1)
                 unc_depth[var_name] = np.mean(unc[var_name], axis=0)
-        
-        if var_name in ci_lower_data and var_name in ci_upper_data:
-            ci_lower_margins[var_name] = pred_anom[var_name] - ci_lower_data[var_name]
-            ci_upper_margins[var_name] = ci_upper_data[var_name] - pred_anom[var_name]
     
     # ========== Build the dataset variables dict ==========
     metadata = test_data['metadata']
@@ -1391,14 +1361,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         p = OUTPUT_META[var_name]['prefix']
         data_vars[f'{p}_uncertainty'] = (['profile', 'depth'],
             unc[var_name] if var_name in unc else np.full((n_profiles, max_length), np.nan))
-    
-    # CI margins (only enabled outputs)
-    for var_name in output_idx:
-        p = OUTPUT_META[var_name]['prefix']
-        data_vars[f'{p}_ci_lower_margin'] = (['profile', 'depth'],
-            ci_lower_margins[var_name] if var_name in ci_lower_margins else np.full((n_profiles, max_length), np.nan))
-        data_vars[f'{p}_ci_upper_margin'] = (['profile', 'depth'],
-            ci_upper_margins[var_name] if var_name in ci_upper_margins else np.full((n_profiles, max_length), np.nan))
     
     # Uncertainty averaged over dimensions (only enabled outputs)
     for var_name in output_idx:
@@ -1438,7 +1400,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         'model_architecture': f"LSTM {'-'.join(map(str, Config.LSTM_UNITS))}",
         'test_data_file': Config.TEST_FILE,
         'MC_dropout_samples': Config.N_MC_SAMPLES,
-        'MC_confidence_level': Config.MC_CONFIDENCE_LEVEL,
         'output_variables': str(list(output_idx.keys())),
         'RMSEs_sum': float(error_stats['rmse_sum']),
         'n_test_profiles': n_profiles,
@@ -1515,12 +1476,6 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
         # Uncertainty (only if enabled)
         if f'{p}_uncertainty' in ds_results:
             ds_results[f'{p}_uncertainty'].attrs = {'long_name': f'{ln} Prediction Uncertainty (MC Dropout std)', 'units': u}
-        
-        # CI margins (only if enabled)
-        if f'{p}_ci_lower_margin' in ds_results:
-            ds_results[f'{p}_ci_lower_margin'].attrs = {'long_name': f'{ln} 95% CI Lower Margin (to subtract from prediction)', 'units': u}
-        if f'{p}_ci_upper_margin' in ds_results:
-            ds_results[f'{p}_ci_upper_margin'].attrs = {'long_name': f'{ln} 95% CI Upper Margin (to add to prediction)', 'units': u}
         
         # Uncertainty averaged (only if enabled)
         if f'{p}_uncertainty_profile' in ds_results:

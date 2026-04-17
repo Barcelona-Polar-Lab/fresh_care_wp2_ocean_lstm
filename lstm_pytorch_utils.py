@@ -290,8 +290,9 @@ def mc_dropout_predict_batch(model, X_batch, n_mc_samples=50, device=None,
     """
     Make predictions with Monte Carlo Dropout for uncertainty estimation.
     
-    This function runs multiple forward passes with dropout enabled to estimate
-    prediction uncertainty. Designed for batch processing.
+    Uses Welford's online algorithm to compute running mean and variance,
+    so only O(1) sample arrays are kept in memory instead of O(N_MC).
+    Confidence intervals can be derived as mean ± z * std at any desired level.
     
     Args:
         model: OceanLSTM model (will be set to train mode for dropout)
@@ -303,7 +304,7 @@ def mc_dropout_predict_batch(model, X_batch, n_mc_samples=50, device=None,
         mc_progress_desc: Description for MC progress bar
     
     Returns:
-        tuple: (y_mean, y_std, y_ci_lower, y_ci_upper)
+        tuple: (y_mean, y_std)
             All of shape (batch_size, n_depths, n_outputs)
     """
     if device is None:
@@ -317,31 +318,33 @@ def mc_dropout_predict_batch(model, X_batch, n_mc_samples=50, device=None,
         X_batch = torch.FloatTensor(X_batch)
     X_batch = X_batch.to(device)
     
-    # Collect MC samples
-    mc_predictions = []
+    # Initialize Welford running statistics
+    running_mean = None
+    running_m2 = None
     
     mc_iter = range(n_mc_samples)
     if show_mc_progress:
         mc_iter = tqdm(mc_iter, desc=mc_progress_desc, leave=False)
     
     with torch.no_grad():
-        for _ in mc_iter:
+        for mc_sample in mc_iter:
             y_pred = model(X_batch).cpu().numpy()
-            mc_predictions.append(y_pred)
+            
+            if running_mean is None:
+                running_mean = np.zeros_like(y_pred)
+                running_m2 = np.zeros_like(y_pred)
+            
+            # Welford online update
+            count = mc_sample + 1
+            delta = y_pred - running_mean
+            running_mean += delta / count
+            delta2 = y_pred - running_mean
+            running_m2 += delta * delta2
     
-    # Stack: (n_mc_samples, batch_size, n_depths, n_outputs)
-    mc_array = np.stack(mc_predictions, axis=0)
+    y_mean = running_mean
+    y_std = np.sqrt(running_m2 / n_mc_samples)
     
-    # Compute statistics across MC samples (axis=0)
-    y_mean = np.mean(mc_array, axis=0)
-    y_std = np.std(mc_array, axis=0)
-    
-    # Confidence intervals (95% by default)
-    alpha = 0.05 / 2  # 2.5% and 97.5%
-    y_ci_lower = np.percentile(mc_array, alpha * 100, axis=0)
-    y_ci_upper = np.percentile(mc_array, (1 - alpha) * 100, axis=0)
-    
-    return y_mean, y_std, y_ci_lower, y_ci_upper
+    return y_mean, y_std
 
 
 def mc_dropout_predict_chunked(model, X, norm_params, n_mc_samples=50, 
@@ -363,7 +366,7 @@ def mc_dropout_predict_chunked(model, X, norm_params, n_mc_samples=50,
         show_mc_progress: Whether to show MC sample progress bar per chunk
     
     Returns:
-        tuple: (y_mean, y_std, y_ci_lower, y_ci_upper)
+        tuple: (y_mean, y_std)
             All of shape (n_profiles, n_depths, n_outputs), denormalized
     """
     if device is None:
@@ -376,8 +379,6 @@ def mc_dropout_predict_chunked(model, X, norm_params, n_mc_samples=50,
     # Pre-allocate output arrays
     y_mean_all = np.zeros((n_profiles, n_depths, n_outputs), dtype=np.float32)
     y_std_all = np.zeros((n_profiles, n_depths, n_outputs), dtype=np.float32)
-    y_ci_lower_all = np.zeros((n_profiles, n_depths, n_outputs), dtype=np.float32)
-    y_ci_upper_all = np.zeros((n_profiles, n_depths, n_outputs), dtype=np.float32)
     
     # Normalize input
     X_norm = normalize_array(X, norm_params['X_mean'], norm_params['X_std'])
@@ -395,7 +396,7 @@ def mc_dropout_predict_chunked(model, X, norm_params, n_mc_samples=50,
         chunk_num = start_idx // chunk_size + 1
         
         # Run MC Dropout prediction
-        y_mean, y_std, y_ci_lower, y_ci_upper = mc_dropout_predict_batch(
+        y_mean, y_std = mc_dropout_predict_batch(
             model, X_chunk, n_mc_samples=n_mc_samples, device=device,
             show_mc_progress=show_mc_progress,
             mc_progress_desc=f"MC samples (chunk {chunk_num}/{n_chunks})"
@@ -404,13 +405,9 @@ def mc_dropout_predict_chunked(model, X, norm_params, n_mc_samples=50,
         # Denormalize outputs
         y_mean = denormalize_array(y_mean, norm_params['y_mean'], norm_params['y_std'])
         y_std = y_std * norm_params['y_std']  # Std scales with y_std only
-        y_ci_lower = denormalize_array(y_ci_lower, norm_params['y_mean'], norm_params['y_std'])
-        y_ci_upper = denormalize_array(y_ci_upper, norm_params['y_mean'], norm_params['y_std'])
         
         # Store results
         y_mean_all[start_idx:end_idx] = y_mean
         y_std_all[start_idx:end_idx] = y_std
-        y_ci_lower_all[start_idx:end_idx] = y_ci_lower
-        y_ci_upper_all[start_idx:end_idx] = y_ci_upper
     
-    return y_mean_all, y_std_all, y_ci_lower_all, y_ci_upper_all
+    return y_mean_all, y_std_all
