@@ -59,25 +59,25 @@ class Config:
     #DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_dev21.nc'
     #TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_test16.nc'
 
-    MODEL_PARENT_DIR = 'model_LSTM_40_40_sat_znorm'  # Parent directory for models
+    MODEL_PARENT_DIR = 'trained_models/wg_daily'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units, can be 
                       # overridden by command line argument.
     
     # Model architecture
-    LSTM_UNITS = [40, 40]  # Can be changed to any list of integers
+    LSTM_UNITS = [52, 46]  # Can be changed to any list of integers
     DROPOUT_RATE = 0.2
-        
+    
     # Training parameters
     BATCH_SIZE = 16
     MAX_EPOCHS = 500
-    LEARNING_RATE = 0.0001
+    LEARNING_RATE = 2e-4
     
     # Early stopping parameters
     PATIENCE = 5
     MIN_DELTA = 1e-6
     
     # Monte Carlo Dropout parameters
-    N_MC_SAMPLES = 50  # Number of forward passes for uncertainty estimation
+    N_MC_SAMPLES = 500  # Number of forward passes for uncertainty estimation
     MC_CONFIDENCE_LEVEL = 0.95  # Confidence level for intervals
     
     # Testing parameters
@@ -92,8 +92,8 @@ class Config:
     COMPUTED_INPUT_VARS = {
         'sst_anomaly': True,          # Sea surface temperature anomaly (satellite SST - GLORYS surface)
         'sss_anomaly': True,          # Sea surface salinity anomaly (satellite SSS - GLORYS surface)
-        'sst_glorys_anomaly': False,  # GLORYS SST anomaly (SST_glorys - T_glorys surface, should be ~0)
-        'sss_glorys_anomaly': False,  # GLORYS SSS anomaly (SSS_glorys - S_glorys surface, should be ~0)
+        'sst_glorys_anomaly': False,  # GLORYS SST anomaly (SST_glorys - T_glorys surface, should be 0)
+        'sss_glorys_anomaly': False,  # GLORYS SSS anomaly (SSS_glorys - S_glorys surface, should be 0)
         'seasonal_cos': True,         # Cosine of seasonal cycle
         'seasonal_sin': True          # Sine of seasonal cycle
     }
@@ -152,12 +152,11 @@ class Config:
                 cls.DIRECT_INPUT_VARS[var_name] = (enabled, ds_key)
     
     # Output variables configuration
-    # Order: temperature, salinity, steric_height
-    OUTPUT_VAR_ORDER = ['temperature', 'salinity', 'steric_height']
+    # Order: temperature, salinity
+    OUTPUT_VAR_ORDER = ['temperature', 'salinity']
     OUTPUT_VARS_ENABLED = {
         'temperature': True,
         'salinity': True,
-        'steric_height': True,
     }
     
     @classmethod
@@ -167,8 +166,8 @@ class Config:
     
     @classmethod
     def set_output_vars_from_binary(cls, binary_string):
-        """Set output variables from a binary string (e.g., '110' for T+S only).
-        Order: temperature, salinity, steric_height"""
+        """Set output variables from a binary string (e.g., '10' for T only).
+        Order: temperature, salinity"""
         if len(binary_string) != len(cls.OUTPUT_VAR_ORDER):
             raise ValueError(
                 f"Output binary string length ({len(binary_string)}) doesn't match "
@@ -626,7 +625,7 @@ def run_testing():
     
     # Print overall RMSE
     output_names = test_data.get('output_names', Config.get_enabled_output_vars())
-    output_units = {'temperature': '°C', 'salinity': 'PSU', 'steric_height': 'cm'}
+    output_units = {'temperature': '°C', 'salinity': '1'}
     print(f"\nOverall RMSE:")
     for i, var_name in enumerate(output_names):
         print(f"  {var_name.replace('_', ' ').title()}: {error_stats['rmse_total'][i]:.3f} {output_units.get(var_name, '')}")
@@ -911,15 +910,23 @@ def plot_training_history(train_losses, dev_losses, stopped_epoch):
 # ============================================================================
 
 def make_predictions(model, test_data, norm_params, device):
-    """Make predictions on test data using Monte Carlo Dropout for uncertainty estimation"""
+    """Make predictions on test data using Monte Carlo Dropout for uncertainty estimation.
+    
+    Uses Welford's online algorithm to compute running mean and variance across
+    MC samples, so only O(1) sample arrays are kept in memory at a time instead
+    of O(N_MC_SAMPLES). Confidence intervals are approximated from the normal
+    distribution (accurate for large sample counts like 500).
+    """
     
     print(f"Making MC Dropout predictions with {Config.N_MC_SAMPLES} samples...")
     
     # Keep model in training mode to enable dropout, but don't update weights
     model.train()
     
-    # Store all MC samples for uncertainty estimation
-    all_mc_predictions = []  # Will store N sets of predictions
+    # z-score for CI bounds (normal approximation, accurate at high sample counts)
+    from scipy.stats import norm as sp_norm
+    alpha = (1 - Config.MC_CONFIDENCE_LEVEL) / 2
+    z_score = sp_norm.ppf(1 - alpha)
     
     if test_data.get('variable_lengths', False):
         # Variable-length sequences: process individually or in small batches
@@ -931,10 +938,25 @@ def make_predictions(model, test_data, norm_params, device):
         batch_size = Config.BATCH_SIZE * 2  # Smaller batch for variable lengths
         n_profiles = len(test_data['X_norm'])
         total_batches = (n_profiles + batch_size - 1) // batch_size
+        lengths = test_data['lengths']
+        max_length = max(lengths)
         
-        # Run N Monte Carlo samples
+        # Determine n_outputs from a single forward pass
+        X_first = [torch.FloatTensor(test_data['X_norm'][0])]
+        L_first = torch.LongTensor([lengths[0]])
+        X_pad_first = pad_sequence(X_first, batch_first=True, padding_value=0.0).to(device)
+        with torch.no_grad():
+            n_outputs = model(X_pad_first, L_first).shape[2]
+        
+        # Initialize Welford running statistics (padded to common shape)
+        running_mean = np.zeros((n_profiles, max_length, n_outputs))
+        running_m2 = np.zeros((n_profiles, max_length, n_outputs))
+        
+        # Run N Monte Carlo samples with online statistics
         for mc_sample in tqdm(range(Config.N_MC_SAMPLES), desc="MC Dropout samples"):
-            predictions = []
+            # Build padded prediction array for this sample
+            sample_padded = np.zeros((n_profiles, max_length, n_outputs))
+            
             with torch.no_grad():
                 for batch_idx in range(total_batches):
                     start_idx = batch_idx * batch_size
@@ -954,51 +976,36 @@ def make_predictions(model, test_data, norm_params, device):
                     # Make predictions
                     y_pred_batch = model(X_padded, lengths_tensor).cpu().numpy()
                     
-                    # Extract only valid lengths for each sequence
+                    # Denormalize and store in padded array
                     for i, length in enumerate(lengths_batch):
-                        predictions.append(y_pred_batch[i, :length, :])
+                        pred_i = y_pred_batch[i, :length, :]
+                        pred_i = pred_i * norm_params['y_std'] + norm_params['y_mean']
+                        sample_padded[start_idx + i, :length, :] = pred_i
             
-            # Denormalize predictions (each profile separately)
-            y_pred_denorm = denormalize_data(predictions, norm_params['y_mean'], norm_params['y_std'], variable_lengths=True)
-            all_mc_predictions.append(y_pred_denorm)
+            # Welford online update
+            count = mc_sample + 1
+            delta = sample_padded - running_mean
+            running_mean += delta / count
+            delta2 = sample_padded - running_mean
+            running_m2 += delta * delta2
         
-        # Compute statistics across MC samples for variable-length sequences
-        # Pad to common length for easier computation
-        lengths = test_data['lengths']
-        max_length = max(lengths)
-        n_outputs = all_mc_predictions[0][0].shape[1]
+        # Compute final statistics
+        variance = running_m2 / Config.N_MC_SAMPLES
+        std_dev = np.sqrt(variance)
         
-        # Initialize arrays to store all MC samples [N_MC, n_profiles, max_length, n_outputs]
-        mc_array = np.full((Config.N_MC_SAMPLES, n_profiles, max_length, n_outputs), np.nan)
-        
-        for mc_idx in range(Config.N_MC_SAMPLES):
-            for prof_idx, length in enumerate(lengths):
-                mc_array[mc_idx, prof_idx, :length, :] = all_mc_predictions[mc_idx][prof_idx]
-        
-        # Compute statistics (ignoring NaN values)
-        y_pred = []  # Mean predictions
-        y_uncertainty = []  # Standard deviations
-        y_ci_lower = []  # Lower confidence bound
-        y_ci_upper = []  # Upper confidence bound
-        
-        alpha = (1 - Config.MC_CONFIDENCE_LEVEL) / 2
-        lower_percentile = alpha * 100
-        upper_percentile = (1 - alpha) * 100
+        # Extract per-profile results (only valid lengths)
+        y_pred = []
+        y_uncertainty = []
+        y_ci_lower = []
+        y_ci_upper = []
         
         for prof_idx, length in enumerate(lengths):
-            # Extract valid data for this profile [N_MC, length, n_outputs]
-            profile_samples = mc_array[:, prof_idx, :length, :]
-            
-            # Compute statistics along MC sample axis (axis=0)
-            mean_pred = np.nanmean(profile_samples, axis=0)  # [length, n_outputs]
-            uncertainty = np.nanstd(profile_samples, axis=0)  # [length, n_outputs]
-            ci_lower = np.nanpercentile(profile_samples, lower_percentile, axis=0)  # [length, n_outputs]
-            ci_upper = np.nanpercentile(profile_samples, upper_percentile, axis=0)  # [length, n_outputs]
-            
-            y_pred.append(mean_pred)
-            y_uncertainty.append(uncertainty)
-            y_ci_lower.append(ci_lower)
-            y_ci_upper.append(ci_upper)
+            mean_prof = running_mean[prof_idx, :length, :]
+            std_prof = std_dev[prof_idx, :length, :]
+            y_pred.append(mean_prof)
+            y_uncertainty.append(std_prof)
+            y_ci_lower.append(mean_prof - z_score * std_prof)
+            y_ci_upper.append(mean_prof + z_score * std_prof)
         
     else:
         # Fixed-length sequences
@@ -1006,36 +1013,37 @@ def make_predictions(model, test_data, norm_params, device):
         X_test_tensor = torch.FloatTensor(X_test_norm).to(device)
         
         batch_size = Config.BATCH_SIZE * 4  # Larger batch for inference
-        total_batches = (X_test_tensor.shape[0] + batch_size - 1) // batch_size
+        pred_shape = list(X_test_norm.shape[:2]) + [norm_params['y_mean'].shape[-1]]  # [n_profiles, n_depths, n_outputs]
         
-        # Run N Monte Carlo samples
+        # Initialize Welford running statistics
+        running_mean = np.zeros(pred_shape)
+        running_m2 = np.zeros(pred_shape)
+        
+        # Run N Monte Carlo samples with online statistics
         for mc_sample in tqdm(range(Config.N_MC_SAMPLES), desc="MC Dropout samples"):
             predictions = []
-            batch_count = 0
             
             with torch.no_grad():
                 for i in range(0, X_test_tensor.shape[0], batch_size):
-                    batch_count += 1
                     X_batch = X_test_tensor[i:i+batch_size]
                     y_pred_batch = model(X_batch).cpu().numpy()
                     predictions.append(y_pred_batch)
             
             y_pred_norm = np.concatenate(predictions, axis=0)
             y_pred_denorm = denormalize_data(y_pred_norm, norm_params['y_mean'], norm_params['y_std'], variable_lengths=False)
-            all_mc_predictions.append(y_pred_denorm)
+            
+            # Welford online update
+            count = mc_sample + 1
+            delta = y_pred_denorm - running_mean
+            running_mean += delta / count
+            delta2 = y_pred_denorm - running_mean
+            running_m2 += delta * delta2
         
-        # Stack all MC samples: [N_MC, n_profiles, n_depths, n_outputs]
-        mc_array = np.stack(all_mc_predictions, axis=0)
-        
-        # Compute statistics across MC samples (axis=0)
-        alpha = (1 - Config.MC_CONFIDENCE_LEVEL) / 2
-        lower_percentile = alpha * 100
-        upper_percentile = (1 - alpha) * 100
-        
-        y_pred = np.mean(mc_array, axis=0)  # Mean prediction
-        y_uncertainty = np.std(mc_array, axis=0)  # Uncertainty (std dev)
-        y_ci_lower = np.percentile(mc_array, lower_percentile, axis=0)  # Lower CI
-        y_ci_upper = np.percentile(mc_array, upper_percentile, axis=0)  # Upper CI
+        # Compute final statistics
+        y_pred = running_mean
+        y_uncertainty = np.sqrt(running_m2 / Config.N_MC_SAMPLES)
+        y_ci_lower = y_pred - z_score * y_uncertainty
+        y_ci_upper = y_pred + z_score * y_uncertainty
     
     return y_pred, y_uncertainty, y_ci_lower, y_ci_upper
 
@@ -1200,15 +1208,8 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
             'climatology_key': 'S_glorys',
             'full_profile_key': 'S',
         },
-        'steric_height': {
-            'prefix': 'SH',
-            'units': 'm',
-            'long_name': 'Steric Height',
-            'climatology_key': 'SH_glorys',
-            'full_profile_key': 'SH',
-        },
     }
-    ALL_OUTPUT_NAMES = ['temperature', 'salinity', 'steric_height']
+    ALL_OUTPUT_NAMES = ['temperature', 'salinity']
     
     # Determine which outputs are enabled (from the model's output_names)
     output_names = test_data.get('output_names', Config.get_enabled_output_vars())
@@ -1576,7 +1577,7 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, y
 # DATA HANDLING FUNCTIONS (HELPER FUNCTIONS)
 # ============================================================================
 
-def detect_nan_tails(T_data, S_data, SH_data):
+def detect_nan_tails(T_data, S_data):
     """
     Detect if data has variable-length sequences with NaN tails.
     Returns (has_nan_tails, lengths_array) where lengths_array contains
@@ -1586,27 +1587,25 @@ def detect_nan_tails(T_data, S_data, SH_data):
     n_depths = T_data.shape[1]
     
     # Check if there are any NaNs at all
-    has_any_nans = np.any(np.isnan(T_data)) or np.any(np.isnan(S_data)) or np.any(np.isnan(SH_data))
+    has_any_nans = np.any(np.isnan(T_data)) or np.any(np.isnan(S_data))
     
     if not has_any_nans:
         return False, None
     
-    # Compute last valid index for each profile (minimum across all three variables)
+    # Compute last valid index for each profile (minimum across T and S)
     lengths = np.zeros(n_profiles, dtype=int)
     
     for i in range(n_profiles):
         # Find last valid index in each variable
         T_valid = np.where(~np.isnan(T_data[i, :]))[0]
         S_valid = np.where(~np.isnan(S_data[i, :]))[0]
-        SH_valid = np.where(~np.isnan(SH_data[i, :]))[0]
         
         # Get last valid index (0-based)
         T_last = T_valid[-1] if len(T_valid) > 0 else -1
         S_last = S_valid[-1] if len(S_valid) > 0 else -1
-        SH_last = SH_valid[-1] if len(SH_valid) > 0 else -1
         
         # Take minimum to be conservative
-        last_valid = max(0, min(T_last, S_last, SH_last))
+        last_valid = max(0, min(T_last, S_last))
         lengths[i] = last_valid
     
     # Check if we have actual variable lengths (not all the same)
@@ -1649,29 +1648,9 @@ def load_datasets():
 def prepare_dataset(ds, dataset_type):
     """Prepare input and output arrays for a dataset with optional NaN-detected variable depths"""
     
-    # Check for NaN patterns in the data to detect variable-length sequences
-    T_sample = ds['TEMP'].values
-    S_sample = ds['PSAL'].values
-    SH_sample = ds['SH'].values
-    
-    has_nan_tails, detected_lengths = detect_nan_tails(T_sample, S_sample, SH_sample)
-    
-    if has_nan_tails:
-        print(f"{dataset_type} dataset: Using NaN-tail detected variable depths")
-        last_valid_idx = detected_lengths
-        max_depth_idx = detected_lengths  # Use same as last_valid for NaN detection
-        print(f"Detected sequence lengths range: {last_valid_idx.min()} to {last_valid_idx.max()}")
-        print(f"Number of unique profile lengths: {len(set(last_valid_idx))}")
-        use_variable_lengths = True
-    else:
-        print(f"{dataset_type} dataset: Using fixed depths (no NaN tails detected)")
-        max_depth_idx = None
-        use_variable_lengths = False
-    
     # Climatology data
     T_glorys = ds['T_glorys'].values
-    S_glorys = ds['S_glorys'].values  
-    SH_glorys = ds['SH_glorys'].values
+    S_glorys = ds['S_glorys'].values
     
     # Surface data selection (satellite or GLORYS)
     if Config.SURFACE_TS == 'satellite':
@@ -1704,7 +1683,23 @@ def prepare_dataset(ds, dataset_type):
     # In-situ data (anomalies from climatology)
     T_anom = ds['TEMP'].values - T_glorys
     S_anom = ds['PSAL'].values - S_glorys
-    SH_anom = ds['SH'].values - ds['SH_glorys'].values
+    
+    # Detect variable-length sequences from anomalies (not raw data).
+    # Using anomalies ensures NaN from BOTH in-situ and climatology are captured,
+    # giving the most restrictive (shortest) valid range per profile.
+    has_nan_tails, detected_lengths = detect_nan_tails(T_anom, S_anom)
+    
+    if has_nan_tails:
+        print(f"{dataset_type} dataset: Using NaN-tail detected variable depths")
+        last_valid_idx = detected_lengths
+        max_depth_idx = detected_lengths  # Use same as last_valid for NaN detection
+        print(f"Detected sequence lengths range: {last_valid_idx.min()} to {last_valid_idx.max()}")
+        print(f"Number of unique profile lengths: {len(set(last_valid_idx))}")
+        use_variable_lengths = True
+    else:
+        print(f"{dataset_type} dataset: Using fixed depths (no NaN tails detected)")
+        max_depth_idx = None
+        use_variable_lengths = False
     
     # Metadata
     n_profiles = sst_anomaly.shape[0]
@@ -1757,7 +1752,6 @@ def prepare_dataset(ds, dataset_type):
     output_arrays_map = {
         'temperature': T_anom,
         'salinity': S_anom,
-        'steric_height': SH_anom,
     }
     enabled_outputs = Config.get_enabled_output_vars()
     output_arrays = [output_arrays_map[name] for name in enabled_outputs]
@@ -1795,12 +1789,10 @@ def prepare_dataset(ds, dataset_type):
             'climatology': {
                 'T_glorys': T_glorys,
                 'S_glorys': S_glorys,
-                'SH_glorys': SH_glorys
             },
             'full_profiles': {
                 'T': ds['TEMP'].values,
                 'S': ds['PSAL'].values,
-                'SH': ds['SH'].values
             },
             'augmentation': {
                 'TEMP_aug_fraction': ds['TEMP_aug_fraction'].values if 'TEMP_aug_fraction' in ds else None,
@@ -1833,12 +1825,10 @@ def prepare_dataset(ds, dataset_type):
             'climatology': {
                 'T_glorys': T_glorys,
                 'S_glorys': S_glorys,
-                'SH_glorys': SH_glorys
             },
             'full_profiles': {
                 'T': ds['TEMP'].values,
                 'S': ds['PSAL'].values,
-                'SH': ds['SH'].values
             },
             'augmentation': {
                 'TEMP_aug_fraction': ds['TEMP_aug_fraction'].values if 'TEMP_aug_fraction' in ds else None,

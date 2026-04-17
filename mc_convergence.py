@@ -210,7 +210,7 @@ def run_mc_dropout(model, X_data, lengths, variable_lengths, norm_params,
         X_norm = [(X - X_mean) / X_std for X in X_data]
         n_profiles = len(X_norm)
         max_length = max(lengths)
-        n_outputs = 3
+        n_outputs = len(norm_params['y_mean'])
         
         # Run MC samples
         mc_array = np.full((n_mc_samples, n_profiles, max_length, n_outputs), np.nan)
@@ -270,73 +270,102 @@ def run_mc_dropout(model, X_data, lengths, variable_lengths, norm_params,
 # PLOTTING
 # ============================================================================
 
-def plot_convergence(mc_values, all_stds, output_path):
+def plot_convergence(mc_values, all_stds, output_path, output_names=None, n_profiles=None):
     """
-    Plot per-profile std evolution and incremental deltas.
-    
+    Plot per-profile std evolution and incremental deltas for T and S only.
+
     Args:
-        mc_values: list of N_MC values tested
-        all_stds: dict {n_mc: array(n_profiles, 3)} with columns [SH, T, S]
-        output_path: path to save figure
+        mc_values:    list of N_MC values tested
+        all_stds:     dict {n_mc: array(n_profiles, n_outputs)}
+        output_path:  path to save figure
+        output_names: list of output variable names in array column order.
+                      Defaults to ['steric_height', 'temperature', 'salinity']
+                      (legacy 3-output order).
+        n_profiles:   number of profiles (inferred from data if None)
     """
-    var_names = ['Temperature', 'Salinity', 'Steric Height']
-    var_idx   = [1, 2, 0]  # T, S, SH columns in the (n_profiles, 3) array
-    var_units = ['°C', 'PSU', 'm']
-    var_colors = ['#d62728', '#2ca02c', '#1f77b4']
-    
+    VAR_META = {
+        'temperature':   ('Temperature',   '°C', '#d62728'),
+        'salinity':      ('Salinity',       '',   '#2ca02c'),
+        'steric_height': ('Steric Height',  'm',  '#1f77b4'),
+    }
+    if output_names is None:
+        output_names = ['steric_height', 'temperature', 'salinity']
+
+    # Always plot only T and S
+    plot_vars = [v for v in ['temperature', 'salinity'] if v in output_names]
+    plot_indices = [output_names.index(v) for v in plot_vars]
+    var_labels = [VAR_META[v][0] for v in plot_vars]
+    var_units  = [VAR_META[v][1] for v in plot_vars]
+    var_colors = [VAR_META[v][2] for v in plot_vars]
+
     n_mc_arr = np.array(mc_values)
-    n_profiles = all_stds[mc_values[0]].shape[0]
-    
-    # Build matrix: (n_profiles, len(mc_values)) for each variable
-    std_matrices = {}
-    for vi, vidx in zip(var_names, var_idx):
-        mat = np.column_stack([all_stds[n][: , vidx] for n in mc_values])
-        std_matrices[vi] = mat  # (n_profiles, len(mc_values))
-    
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
-    
-    for col, (vname, vidx, vunit, vcol) in enumerate(zip(var_names, var_idx, var_units, var_colors)):
-        mat = std_matrices[vname]  # (n_profiles, len(mc_values))
-        
+    if n_profiles is None:
+        n_profiles = all_stds[mc_values[0]].shape[0]
+
+    # Build matrix (n_profiles, len(mc_values)) per plotted variable
+    std_matrices = [
+        np.column_stack([all_stds[n][:, vi] for n in mc_values])
+        for vi in plot_indices
+    ]
+
+    fig, axes = plt.subplots(3, 2, figsize=(12, 13))
+
+    for col in range(2):
+        mat   = std_matrices[col]
+        vname = var_labels[col]
+        vunit = var_units[col]
+        vcol  = var_colors[col]
+        unit_str = f' ({vunit})' if vunit else ''
+
         # --- Top row: std evolution ---
         ax = axes[0, col]
         for p in range(n_profiles):
-            ax.plot(n_mc_arr, mat[p, :], color=vcol, alpha=0.25, linewidth=0.7)
-        # Bold median line
+            ax.plot(n_mc_arr, mat[p, :], color=vcol, alpha=0.25, linewidth=1.2)
         median = np.median(mat, axis=0)
-        ax.plot(n_mc_arr, median, color='black', linewidth=2, label='Median')
-        
-        ax.set_title(f'{vname} ({vunit})', fontsize=12, fontweight='bold')
+        ax.plot(n_mc_arr, median, color='black', linewidth=2.5, label='Median')
+        ax.set_title(f'{vname}{unit_str}', fontsize=12, fontweight='bold')
         ax.set_xlabel('N MC Samples')
-        ax.set_ylabel(f'Per-profile mean std ({vunit})')
+        ax.set_ylabel(f'Per-profile mean std{unit_str}')
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
         ax.set_xlim(n_mc_arr[0], n_mc_arr[-1])
-        
-        # --- Bottom row: |Δ std| between consecutive N ---
+
+        # --- Middle row: |Δ std| between consecutive N ---
         ax2 = axes[1, col]
-        delta_mat = np.abs(np.diff(mat, axis=1))  # (n_profiles, len(mc_values)-1)
-        delta_n = n_mc_arr[1:]
-        
+        delta_mat = np.abs(np.diff(mat, axis=1))
+        delta_n   = n_mc_arr[1:]
         for p in range(n_profiles):
-            ax2.plot(delta_n, delta_mat[p, :], color=vcol, alpha=0.25, linewidth=0.7)
+            ax2.plot(delta_n, delta_mat[p, :], color=vcol, alpha=0.25, linewidth=1.2)
         median_delta = np.median(delta_mat, axis=0)
-        ax2.plot(delta_n, median_delta, color='black', linewidth=2, label='Median')
-        
+        ax2.plot(delta_n, median_delta, color='black', linewidth=2.5, label='Median')
         ax2.set_title(f'|Δ std| consecutive N', fontsize=11)
         ax2.set_xlabel('N MC Samples')
-        ax2.set_ylabel(f'|Δ per-profile mean std| ({vunit})')
+        ax2.set_ylabel(f'|Δ per-profile mean std|{unit_str}')
         ax2.legend(fontsize=9)
         ax2.grid(True, alpha=0.3)
-        ax2.set_ylim(0, 0.03)
         if len(delta_n) > 1:
             ax2.set_xlim(delta_n[0], delta_n[-1])
-    
-    fig.suptitle('MC Dropout Convergence: Per-Profile Uncertainty (100 random test profiles)',
-                 fontsize=14, fontweight='bold', y=0.98)
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        # --- Bottom row: sum of |Δ std| across all profiles ---
+        ax3 = axes[2, col]
+        sum_delta = np.sum(delta_mat, axis=0)
+        ax3.plot(delta_n, sum_delta, color=vcol, linewidth=2.5)
+        ax3.set_title(f'Sum of |Δ std| across profiles', fontsize=11)
+        ax3.set_xlabel('N MC Samples')
+        ax3.set_ylabel(f'Σ |Δ per-profile mean std|{unit_str}')
+        ax3.grid(True, alpha=0.3)
+        if len(delta_n) > 1:
+            ax3.set_xlim(delta_n[0], delta_n[-1])
+
+    fig.suptitle(
+        f'MC Dropout Convergence: Per-Profile Uncertainty ({n_profiles} random test profiles)',
+        fontsize=14, fontweight='bold', y=0.98
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Plot saved to: {output_path}")
@@ -352,12 +381,12 @@ def main():
                        default='data_for_lstm/100_random_test_profiles.nc',
                        help='Path to small test dataset')
     parser.add_argument('--model_path', type=str,
-                       default='trained_models/model_LSTM_40_40_sat_znorm/model.pth',
+                       default='trained_models/wg_daily/aa_best_model_LSTM_46_bs16_lr2e-4_pat5_do0.2/model.pth',
                        help='Path to trained model checkpoint')
-    parser.add_argument('--output', type=str, default='plots/mc_convergence.png',
+    parser.add_argument('--output', type=str, default='plots/mc_convergence_best_model.png',
                        help='Output plot path')
     parser.add_argument('--mc_values', nargs='+', type=int,
-                       default=[5, 10, 15, 20, 25, 30, 35, 40, 50, 60, 75, 90, 100, 125, 150, 175, 200, 225, 250, 275, 300, 325, 350, 375, 400, 450, 500],
+                       default=list(range(10, 1010, 10)),
                        help='List of N_MC_SAMPLES values to test')
     args = parser.parse_args()
     
@@ -381,7 +410,8 @@ def main():
         dropout_rate=dropout_rate
     ).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"Model: LSTM {arch['lstm_units']}, inputs={input_names}")
+    output_names = checkpoint.get('output_names') or ['steric_height', 'temperature', 'salinity']
+    print(f"Model: LSTM {arch['lstm_units']}, inputs={input_names}, outputs={output_names}")
     
     # --- Load test data ---
     print(f"Loading test data from {args.test_file}...")
@@ -406,14 +436,17 @@ def main():
         all_stds[n_mc] = profile_mean_std
         
         # Print summary for this N
-        med_T = np.median(profile_mean_std[:, 1])
-        med_S = np.median(profile_mean_std[:, 2])
-        med_SH = np.median(profile_mean_std[:, 0])
-        print(f"  N={n_mc:>4d}  |  median std  T={med_T:.5f}°C  S={med_S:.5f}PSU  SH={med_SH:.6f}m")
+        VAR_FMT = {'temperature': ('T', '°C', '.5f'), 'salinity': ('S', '', '.5f'), 'steric_height': ('SH', 'm', '.6f')}
+        parts = []
+        for i, oname in enumerate(output_names):
+            abbr, unit, fmt = VAR_FMT[oname]
+            val = np.median(profile_mean_std[:, i])
+            parts.append(f"{abbr}={val:{fmt}}{unit}")
+        print(f"  N={n_mc:>4d}  |  median std  {'  '.join(parts)}")
     
     # --- Plot ---
     print(f"\nGenerating plot...")
-    plot_convergence(mc_values, all_stds, args.output)
+    plot_convergence(mc_values, all_stds, args.output, output_names=output_names, n_profiles=n_profiles)
     
     ds.close()
     print("Done!")
