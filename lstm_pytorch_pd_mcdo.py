@@ -59,7 +59,7 @@ class Config:
     #DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_dev21.nc'
     #TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_test16.nc'
 
-    MODEL_PARENT_DIR = 'trained_models/wg_daily'  # Parent directory for models
+    MODEL_PARENT_DIR = 'trained_models/wg_daily_strat_real_only'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units, can be 
                       # overridden by command line argument.
     
@@ -81,6 +81,7 @@ class Config:
     
     # Testing parameters
     TEST_REAL_DATA_ONLY = True  # Compute errors only on real (non-augmented) data points
+    TRAIN_REAL_DATA_ONLY = False  # Train only on real (non-augmented) depth points (AND mask: both TEMP and PSAL must be real)
     
     # Surface data source
     SURFACE_TS = 'satellite'  # 'satellite' for SST/SSS or 'glorys' for SST_glorys/SSS_glorys
@@ -180,9 +181,18 @@ class Config:
             raise ValueError("At least one output variable must be enabled")
     
     @staticmethod
+    def _format_lr(lr):
+        """Format learning rate as compact scientific notation, e.g. 0.0001 -> '1e-4'"""
+        import re
+        s = f'{lr:.0e}'  # e.g. '1e-04'
+        return re.sub(r'e([+-])0*(\d+)', r'e\1\2', s)  # '1e-04' -> '1e-4'
+
+    @staticmethod
     def get_model_dir(lstm_units):
-        """Get MODEL_DIR based on LSTM units, surface T/S source, and output config"""
+        """Get MODEL_DIR based on LSTM units, hyperparameters, surface T/S source, and output config"""
         units_str = '_'.join(map(str, lstm_units))
+        lr_str = Config._format_lr(Config.LEARNING_RATE)
+        hyperparam_str = f'_bs{Config.BATCH_SIZE}_lr{lr_str}_pat{Config.PATIENCE}_do{Config.DROPOUT_RATE}'
         surface_suffix = '_sat' if Config.SURFACE_TS == 'satellite' else '_glor'
         # Add output config suffix if not all outputs are enabled
         enabled = Config.get_enabled_output_vars()
@@ -190,7 +200,7 @@ class Config:
             output_suffix = '_' + ''.join(v[0].upper() for v in enabled)  # e.g., '_TS'
         else:
             output_suffix = ''
-        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}{surface_suffix}{output_suffix}'
+        return f'{Config.MODEL_PARENT_DIR}/model_LSTM_{units_str}{hyperparam_str}{surface_suffix}{output_suffix}'
 
 # ============================================================================
 # NEURAL NETWORK MODEL
@@ -362,6 +372,8 @@ def main():
                        help='Early stopping patience (number of epochs)')
     parser.add_argument('--test_real_data_only', type=bool, default=None,
                        help='Compute RMSE only on real (non-augmented) data points')
+    parser.add_argument('--train_real_data_only', action='store_true', default=False,
+                       help='Train only on real (non-augmented) depth points (both TEMP and PSAL must be real)')
     parser.add_argument('--surface_ts', choices=['satellite', 'glorys'], default=None,
                        help='Surface T/S data source: satellite (SST/SSS) or glorys (SST_glorys/SSS_glorys)')
     parser.add_argument('--model_dir', type=str, default=None,
@@ -389,6 +401,8 @@ def main():
         Config.PATIENCE = args.patience
     if args.test_real_data_only is not None:
         Config.TEST_REAL_DATA_ONLY = args.test_real_data_only
+    if args.train_real_data_only:
+        Config.TRAIN_REAL_DATA_ONLY = True
     if args.surface_ts:
         Config.SURFACE_TS = args.surface_ts
     if args.input_vars:
@@ -402,6 +416,7 @@ def main():
     print(f"LR={Config.LEARNING_RATE}, Dropout={Config.DROPOUT_RATE}, Patience={Config.PATIENCE}")
     print(f"Surface T/S source: {Config.SURFACE_TS}")
     print(f"Output variables: {Config.get_enabled_output_vars()}")
+    print(f"Train on real data only: {Config.TRAIN_REAL_DATA_ONLY}")
     
     # Set model directory
     if args.model_dir:
@@ -528,7 +543,8 @@ def run_training():
         'INPUT_VAR_ORDER': Config.INPUT_VAR_ORDER,
         'OUTPUT_VAR_ORDER': Config.OUTPUT_VAR_ORDER,
         'OUTPUT_VARS_ENABLED': dict(Config.OUTPUT_VARS_ENABLED),
-        'SURFACE_TS': Config.SURFACE_TS
+        'SURFACE_TS': Config.SURFACE_TS,
+        'TRAIN_REAL_DATA_ONLY': Config.TRAIN_REAL_DATA_ONLY
     }
     
     torch.save({
@@ -664,7 +680,7 @@ def train_model(model, train_loader, dev_loader, device):
         print(f"Initial GPU memory: {torch.cuda.memory_allocated()/1e6:.1f} MB")
     
     # Loss function and optimizer
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss(reduction='none')
     optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
     
     # History tracking
@@ -691,27 +707,54 @@ def train_model(model, train_loader, dev_loader, device):
         train_loss = 0.0
         
         for batch_data in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
-            if len(batch_data) == 3:  # Variable-length sequences
-                batch_X, batch_y, lengths = batch_data
-                batch_X, batch_y, lengths = batch_X.to(device), batch_y.to(device), lengths.to(device)
-                
+            if len(batch_data) == 4:  # Variable-length sequences with real data mask
+                batch_X, batch_y, lengths, real_mask_batch = batch_data
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                lengths, real_mask_batch = lengths.to(device), real_mask_batch.to(device)
+
                 optimizer.zero_grad()
                 outputs = model(batch_X, lengths)
-                
+
+                # AND of padding mask and real data mask
+                pad_mask = torch.zeros_like(batch_y, dtype=torch.bool)
+                for i, length in enumerate(lengths):
+                    pad_mask[i, :length] = True
+                combined_mask = pad_mask & real_mask_batch.unsqueeze(-1).expand_as(batch_y)
+
+                loss_elem = criterion(outputs, batch_y)
+                loss = loss_elem[combined_mask].mean()
+            elif len(batch_data) == 3 and batch_data[2].dtype == torch.long:  # Variable-length sequences
+                batch_X, batch_y, lengths = batch_data
+                batch_X, batch_y, lengths = batch_X.to(device), batch_y.to(device), lengths.to(device)
+
+                optimizer.zero_grad()
+                outputs = model(batch_X, lengths)
+
                 # Create mask for variable lengths to ignore padded positions in loss
                 mask = torch.zeros_like(batch_y, dtype=torch.bool)
                 for i, length in enumerate(lengths):
                     mask[i, :length] = True
-                
-                # Compute masked loss
-                loss = criterion(outputs[mask], batch_y[mask])
+
+                loss_elem = criterion(outputs, batch_y)
+                loss = loss_elem[mask].mean()
+            elif len(batch_data) == 3:  # Fixed-length sequences with real data mask
+                batch_X, batch_y, real_mask_batch = batch_data
+                batch_X, batch_y, real_mask_batch = batch_X.to(device), batch_y.to(device), real_mask_batch.to(device)
+
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+
+                combined_mask = real_mask_batch.unsqueeze(-1).expand_as(batch_y)
+                loss_elem = criterion(outputs, batch_y)
+                loss = loss_elem[combined_mask].mean()
             else:  # Fixed-length sequences
                 batch_X, batch_y = batch_data
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-                
+
                 optimizer.zero_grad()
                 outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
+                loss_elem = criterion(outputs, batch_y)
+                loss = loss_elem.mean()
             
             loss.backward()
             optimizer.step()
@@ -727,24 +770,48 @@ def train_model(model, train_loader, dev_loader, device):
         
         with torch.no_grad():
             for batch_data in dev_loader:
-                if len(batch_data) == 3:  # Variable-length sequences
+                if len(batch_data) == 4:  # Variable-length sequences with real data mask
+                    batch_X, batch_y, lengths, real_mask_batch = batch_data
+                    batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                    lengths, real_mask_batch = lengths.to(device), real_mask_batch.to(device)
+
+                    outputs = model(batch_X, lengths)
+
+                    pad_mask = torch.zeros_like(batch_y, dtype=torch.bool)
+                    for i, length in enumerate(lengths):
+                        pad_mask[i, :length] = True
+                    combined_mask = pad_mask & real_mask_batch.unsqueeze(-1).expand_as(batch_y)
+
+                    loss_elem = criterion(outputs, batch_y)
+                    loss = loss_elem[combined_mask].mean()
+                elif len(batch_data) == 3 and batch_data[2].dtype == torch.long:  # Variable-length sequences
                     batch_X, batch_y, lengths = batch_data
                     batch_X, batch_y, lengths = batch_X.to(device), batch_y.to(device), lengths.to(device)
-                    
+
                     outputs = model(batch_X, lengths)
-                    
+
                     # Create mask for variable lengths
                     mask = torch.zeros_like(batch_y, dtype=torch.bool)
                     for i, length in enumerate(lengths):
                         mask[i, :length] = True
-                    
-                    # Compute masked loss
-                    loss = criterion(outputs[mask], batch_y[mask])
+
+                    loss_elem = criterion(outputs, batch_y)
+                    loss = loss_elem[mask].mean()
+                elif len(batch_data) == 3:  # Fixed-length sequences with real data mask
+                    batch_X, batch_y, real_mask_batch = batch_data
+                    batch_X, batch_y, real_mask_batch = batch_X.to(device), batch_y.to(device), real_mask_batch.to(device)
+
+                    outputs = model(batch_X)
+
+                    combined_mask = real_mask_batch.unsqueeze(-1).expand_as(batch_y)
+                    loss_elem = criterion(outputs, batch_y)
+                    loss = loss_elem[combined_mask].mean()
                 else:  # Fixed-length sequences
                     batch_X, batch_y = batch_data
                     batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                     outputs = model(batch_X)
-                    loss = criterion(outputs, batch_y)
+                    loss_elem = criterion(outputs, batch_y)
+                    loss = loss_elem.mean()
                 
                 dev_loss += loss.item()
         
@@ -829,39 +896,68 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
     if train_data.get('variable_lengths', False):
         # Variable-length sequences: need custom dataset and collate function
         from torch.nn.utils.rnn import pad_sequence
-        
+
+        # Determine if we need to include real_mask in batches
+        use_real_mask = (Config.TRAIN_REAL_DATA_ONLY and
+                         train_data.get('real_mask') is not None)
+
         def collate_variable_length(batch):
             """Custom collate function for variable-length sequences"""
-            X_batch, y_batch, lengths_batch = zip(*batch)
-            
+            if use_real_mask:
+                X_batch, y_batch, lengths_batch, mask_batch = zip(*batch)
+            else:
+                X_batch, y_batch, lengths_batch = zip(*batch)
+
             # Convert to tensors
             X_tensors = [torch.FloatTensor(x) for x in X_batch]
             y_tensors = [torch.FloatTensor(y) for y in y_batch]
             lengths = torch.LongTensor(lengths_batch)
-            
+
             # Pad sequences to same length within batch
             X_padded = pad_sequence(X_tensors, batch_first=True, padding_value=-999.0)
             y_padded = pad_sequence(y_tensors, batch_first=True, padding_value=-999.0)
-            
+
+            if use_real_mask:
+                mask_tensors = [torch.BoolTensor(m) for m in mask_batch]
+                mask_padded = pad_sequence(mask_tensors, batch_first=True, padding_value=False)
+                return X_padded, y_padded, lengths, mask_padded
+
             return X_padded, y_padded, lengths
-        
+
         # Custom dataset class for variable-length sequences
         class VariableLengthDataset:
-            def __init__(self, X_list, y_list, lengths):
+            def __init__(self, X_list, y_list, lengths, mask_list=None):
                 self.X_list = X_list
                 self.y_list = y_list
                 self.lengths = lengths
-                
+                self.mask_list = mask_list
+
             def __len__(self):
                 return len(self.X_list)
-                
+
             def __getitem__(self, idx):
+                if self.mask_list is not None:
+                    return self.X_list[idx], self.y_list[idx], self.lengths[idx], self.mask_list[idx]
                 return self.X_list[idx], self.y_list[idx], self.lengths[idx]
-        
+
+        # Build per-profile mask lists if needed
+        if use_real_mask:
+            train_mask_list = [
+                train_data['real_mask'][i, :train_data['lengths'][i]]
+                for i in range(len(train_data['X_norm']))
+            ]
+            dev_mask_list = [
+                dev_data['real_mask'][i, :dev_data['lengths'][i]]
+                for i in range(len(dev_data['X_norm']))
+            ]
+        else:
+            train_mask_list = None
+            dev_mask_list = None
+
         # Create datasets
-        train_dataset = VariableLengthDataset(train_data['X_norm'], train_data['y_norm'], train_data['lengths'])
-        dev_dataset = VariableLengthDataset(dev_data['X_norm'], dev_data['y_norm'], dev_data['lengths'])
-        
+        train_dataset = VariableLengthDataset(train_data['X_norm'], train_data['y_norm'], train_data['lengths'], train_mask_list)
+        dev_dataset = VariableLengthDataset(dev_data['X_norm'], dev_data['y_norm'], dev_data['lengths'], dev_mask_list)
+
         # Create data loaders with custom collate function
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_variable_length)
         dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_variable_length)
@@ -870,12 +966,17 @@ def create_data_loaders(train_data, dev_data, batch_size=16):
         # Fixed-length sequences (original behavior)
         X_train = torch.FloatTensor(train_data['X_norm'])
         y_train = torch.FloatTensor(train_data['y_norm'])
-        train_dataset = TensorDataset(X_train, y_train)
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        
         X_dev = torch.FloatTensor(dev_data['X_norm'])
         y_dev = torch.FloatTensor(dev_data['y_norm'])
-        dev_dataset = TensorDataset(X_dev, y_dev)
+
+        if Config.TRAIN_REAL_DATA_ONLY and train_data.get('real_mask') is not None:
+            train_dataset = TensorDataset(X_train, y_train, torch.BoolTensor(train_data['real_mask']))
+            dev_dataset = TensorDataset(X_dev, y_dev, torch.BoolTensor(dev_data['real_mask']))
+        else:
+            train_dataset = TensorDataset(X_train, y_train)
+            dev_dataset = TensorDataset(X_dev, y_dev)
+
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         dev_loader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False)
     
     return train_loader, dev_loader
@@ -1710,7 +1811,13 @@ def prepare_dataset(ds, dataset_type):
     }
     enabled_outputs = Config.get_enabled_output_vars()
     output_arrays = [output_arrays_map[name] for name in enabled_outputs]
-    
+
+    # Compute real data mask: depth points where BOTH TEMP and PSAL are real (non-augmented)
+    if 'TEMP_augs' in ds and 'PSAL_augs' in ds:
+        real_mask = (ds['TEMP_augs'].values == 0) & (ds['PSAL_augs'].values == 0)
+    else:
+        real_mask = None
+
     # Handle variable vs fixed length sequences
     if use_variable_lengths:
         # For variable lengths, we'll store as lists initially
@@ -1736,6 +1843,7 @@ def prepare_dataset(ds, dataset_type):
             'X': X_list,  # List of variable-length sequences
             'y': y_list,  # List of variable-length sequences
             'lengths': lengths,  # Sequence lengths for pack_padded_sequence
+            'real_mask': real_mask,  # [n_profiles, n_depths] bool mask: True where BOTH T and S are real
             'input_names': input_names,
             'output_names': enabled_outputs,
             'variable_lengths': True,
@@ -1774,6 +1882,7 @@ def prepare_dataset(ds, dataset_type):
         return {
             'X': X,
             'y': y,
+            'real_mask': real_mask,  # [n_profiles, n_depths] bool mask: True where BOTH T and S are real
             'input_names': input_names,
             'output_names': enabled_outputs,
             'variable_lengths': False,
