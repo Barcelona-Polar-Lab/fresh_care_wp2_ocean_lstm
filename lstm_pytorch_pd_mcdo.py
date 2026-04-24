@@ -50,15 +50,16 @@ class Config:
     """Configuration class for easy parameter adjustment"""
     
     # Local file paths
-    TRAIN_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_train63.nc'
-    DEV_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_dev21.nc'
-    TEST_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_test16.nc'
+    #TRAIN_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_train63.nc'
+    #DEV_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_dev21.nc'
+    #TEST_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_test16.nc'
 
-    #Remote file paths
-    #TRAIN_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_train63.nc'
-    #DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_dev21.nc'
-    #TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_test16.nc'
+    # Remote file paths (bec112 server)
+    TRAIN_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_train63.nc'
+    DEV_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_dev21.nc'
+    TEST_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_test16.nc'
 
+    #local
     MODEL_PARENT_DIR = 'trained_models/wg_daily_strat_real_only_after_ref'  # Parent directory for models
     MODEL_DIR = None  # Will be set dynamically based on LSTM units, can be 
                       # overridden by command line argument.
@@ -190,9 +191,9 @@ class Config:
         return re.sub(r'e([+-])0*(\d+)', r'e\1\2', s)  # '1e-04' -> '1e-4'
 
     @staticmethod
-    def get_model_dir(lstm_units):
-        """Get MODEL_DIR based on LSTM units, hyperparameters, surface T/S source, and output config"""
-        units_str = '_'.join(map(str, lstm_units))
+    def get_model_dir():
+        """Get MODEL_DIR based on LSTM units, hyperparameters, surface T/S source, and output config (all read from Config)."""
+        units_str = '_'.join(map(str, Config.LSTM_UNITS))
         lr_str = Config._format_lr(Config.LEARNING_RATE)
         hyperparam_str = f'_bs{Config.BATCH_SIZE}_lr{lr_str}_pat{Config.PATIENCE_EVALS}x{Config.MC_DEV_EVERY}_do{Config.DROPOUT_RATE}'
         surface_suffix = '_sat' if Config.SURFACE_TS == 'satellite' else '_glor'
@@ -429,7 +430,7 @@ def main():
         Config.MODEL_DIR = args.model_dir
         print(f"Model directory (custom): {Config.MODEL_DIR}")
     else:
-        Config.MODEL_DIR = Config.get_model_dir(Config.LSTM_UNITS)
+        Config.MODEL_DIR = Config.get_model_dir()
         print(f"Model directory (auto-generated): {Config.MODEL_DIR}")
     
     # Run based on mode
