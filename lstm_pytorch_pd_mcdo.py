@@ -69,16 +69,16 @@ class Config:
     
     # Training parameters
     BATCH_SIZE = 16
-    MAX_EPOCHS = 200
+    MAX_EPOCHS = 500
     LEARNING_RATE = 2e-4
     
     # Early stopping parameters (evaluated every MC_DEV_EVERY epochs on MC dev loss)
     PATIENCE_EVALS = 3     # stop after this many MC-dev evals without improvement
-    MIN_DELTA = 1e-6
+    MC_DEV_EVERY = 5       # epochs between MC-dev evaluations during training
+    MIN_DELTA = 2e-3       # absolute MC-dev-loss improvement required to reset patience
 
     # Monte Carlo Dropout parameters
     N_MC_SAMPLES = 500     # forward passes at test time (uncertainty estimation)
-    MC_DEV_EVERY = 5       # epochs between MC-dev evaluations during training
     MC_DEV_SAMPLES = 20    # forward passes per MC evaluation (train and dev)
     
     # Testing parameters
@@ -194,7 +194,7 @@ class Config:
         """Get MODEL_DIR based on LSTM units, hyperparameters, surface T/S source, and output config"""
         units_str = '_'.join(map(str, lstm_units))
         lr_str = Config._format_lr(Config.LEARNING_RATE)
-        hyperparam_str = f'_bs{Config.BATCH_SIZE}_lr{lr_str}_pat{Config.PATIENCE_EVALS}_do{Config.DROPOUT_RATE}'
+        hyperparam_str = f'_bs{Config.BATCH_SIZE}_lr{lr_str}_pat{Config.PATIENCE_EVALS}x{Config.MC_DEV_EVERY}_do{Config.DROPOUT_RATE}'
         surface_suffix = '_sat' if Config.SURFACE_TS == 'satellite' else '_glor'
         # Add output config suffix if not all outputs are enabled
         enabled = Config.get_enabled_output_vars()
