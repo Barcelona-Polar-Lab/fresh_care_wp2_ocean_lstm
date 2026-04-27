@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import warnings
 import argparse
+import copy
 import time
 warnings.filterwarnings("ignore")
 from tqdm import tqdm
@@ -781,7 +782,8 @@ def train_model(model, train_loader, dev_loader, device):
             if mc_dev_loss < best_dev_loss - Config.MIN_DELTA:
                 best_dev_loss = mc_dev_loss
                 patience_counter = 0
-                best_model_state = model.state_dict().copy()
+                # Deep-copy so the saved tensors don't get overwritten by continued training
+                best_model_state = copy.deepcopy(model.state_dict())
                 print(f"  → New best MC dev loss: {mc_dev_loss:.6f}")
             else:
                 patience_counter += 1
@@ -1279,6 +1281,8 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, r
     data_vars['Y_EASE'] = (['profile'], metadata['y_ease'])
     data_vars['TIME'] = (['profile'], metadata['time'])
     data_vars['day_of_year'] = (['profile'], metadata['day_of_year'])
+    if metadata.get('ice_conc') is not None:
+        data_vars['ice_conc'] = (['profile'], metadata['ice_conc'])
     
     # Build global attributes
     global_attrs = {
@@ -1411,6 +1415,13 @@ def create_results_dataset(test_data, y_pred, error_stats, y_uncertainty=None, r
             ds_results['TIME'].attrs = {'long_name': 'Profile Time'}
     if 'day_of_year' in ds_results:
         ds_results['day_of_year'].attrs = {'long_name': 'Day of Year'}
+    if 'ice_conc' in ds_results:
+        attrs = metadata.get('ice_conc_attrs')
+        ds_results['ice_conc'].attrs = attrs if attrs else {
+            'long_name': 'Sea-ice concentration (nearest-neighbour from OSI SAF daily product)',
+            'units': '%',
+            'comment': 'NaN: not set; 0: ice free; >0: ice present (concentration in %)'
+        }
     
     return ds_results
 
@@ -1644,7 +1655,9 @@ def prepare_dataset(ds, dataset_type):
             'day_of_year': day_of_year,
             'time': ds['TIME'].values,
             'time_attrs': dict(ds['TIME'].attrs) if 'TIME' in ds else {},
-            'depth': ds['depth'].values
+            'depth': ds['depth'].values,
+            'ice_conc': ds['ice_conc'].values if 'ice_conc' in ds else None,
+            'ice_conc_attrs': dict(ds['ice_conc'].attrs) if 'ice_conc' in ds else {},
         }
     }
 
