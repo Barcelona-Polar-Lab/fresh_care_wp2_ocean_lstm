@@ -75,7 +75,7 @@ class Config:
     LEARNING_RATE = 2e-4
     
     # Early stopping parameters (evaluated every MC_DEV_EVERY epochs on MC dev loss)
-    PATIENCE_EVALS = 3     # stop after this many MC-dev evals without improvement
+    PATIENCE_EVALS = 6     # stop after this many MC-dev evals without improvement
     MC_DEV_EVERY = 5       # epochs between MC-dev evaluations during training
     MIN_DELTA = 2e-3       # absolute MC-dev-loss improvement required to reset patience
 
