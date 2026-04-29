@@ -37,7 +37,7 @@ FIXED_MC_DEV_EVERY=5  # matches Config.MC_DEV_EVERY default; used only for dir n
 
 # Swept axes
 LEARNING_RATES=(2e-4 1e-4 5e-5)
-PATEVAL_VALUES=(2 5)
+PATEVAL_VALUES=(6 10)
 
 # ============================================================
 # HELPER FUNCTIONS
