@@ -69,7 +69,7 @@ paths:
 # ---------------------------------------------------------------------------
 processing:
   glorys_mode: "daily"
-  n_mc_samples: 50
+  n_mc_samples: 500
   chunk_size: 2000        # smaller than default 5000 to keep peak RAM/GPU lower at 1400x1400
   time_window_days: 16
 

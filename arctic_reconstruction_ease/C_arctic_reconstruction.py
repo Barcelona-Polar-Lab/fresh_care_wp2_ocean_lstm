@@ -19,6 +19,7 @@ Usage:
 import os
 import sys
 import argparse
+import calendar
 import numpy as np
 import xarray as xr
 from pathlib import Path
@@ -665,9 +666,15 @@ def reconstruct_single_date(target_date, cfg, model, norm_params,
 
     ds_out['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
+    t_start = cfg['time']['_start']
+    t_end = cfg['time']['_end']
+    last_day = calendar.monthrange(t_end.year, t_end.month)[1]
+    t_end_full = t_end.replace(day=last_day)
+    period_label = f'{t_start:%Y-%m-%d} to {t_end_full:%Y-%m-%d}'
+
     ds_out.attrs = build_global_attrs(
         cfg,
-        title=f'Arctic 3-D ocean reconstruction ({get_resolution_label(cfg)}, {target_date:%Y-%m-%d})',
+        title=f'Arctic 4-D ocean reconstruction ({get_resolution_label(cfg)}, {period_label})',
         source=('LSTM with Monte-Carlo Dropout, trained on Arctic in-situ profiles, '
                 'driven by satellite SST/SSS/ADT and added to GLORYS12 reanalysis reference'),
         extra={

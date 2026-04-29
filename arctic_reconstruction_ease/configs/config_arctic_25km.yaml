@@ -64,7 +64,7 @@ paths:
 # ---------------------------------------------------------------------------
 processing:
   glorys_mode: "daily"
-  n_mc_samples: 50
+  n_mc_samples: 500
   chunk_size: 5000
   time_window_days: 16
 
