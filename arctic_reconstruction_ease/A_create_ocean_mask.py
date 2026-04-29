@@ -32,6 +32,7 @@ from config_utils import (
     compute_latlon_grids,
     get_ease_latlon_bbox,
     load_pipeline_plan,
+    build_global_attrs,
 )
 
 
@@ -233,22 +234,28 @@ def create_static_dataset(cfg):
     ds = xr.Dataset(
         {
             'ocean_mask': (['y_ease', 'x_ease'], ocean_mask, {
+                'standard_name': 'sea_binary_mask',
                 'long_name': 'Ocean mask',
-                'description': '1 = ocean, 0 = land',
+                'flag_values': np.array([0, 1], dtype=np.uint8),
+                'flag_meanings': 'land ocean',
                 'grid_mapping': 'ease_grid_mapping',
             }),
             'elevation': (['y_ease', 'x_ease'], elevation, {
-                'long_name': 'GEBCO elevation (positive up)',
+                'standard_name': 'height_above_mean_sea_level',
+                'long_name': 'GEBCO surface elevation (positive up)',
                 'units': 'm',
+                'positive': 'up',
                 'source': f'Interpolated from 1 km GEBCO to {label}',
                 'grid_mapping': 'ease_grid_mapping',
             }),
             'latitude': (['y_ease', 'x_ease'], lat_2d.astype(np.float32), {
+                'standard_name': 'latitude',
                 'long_name': 'Latitude',
                 'units': 'degrees_north',
                 'grid_mapping': 'ease_grid_mapping',
             }),
             'longitude': (['y_ease', 'x_ease'], lon_2d.astype(np.float32), {
+                'standard_name': 'longitude',
                 'long_name': 'Longitude',
                 'units': 'degrees_east',
                 'grid_mapping': 'ease_grid_mapping',
@@ -273,18 +280,17 @@ def create_static_dataset(cfg):
     # Grid mapping variable
     ds['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
-    # Global attributes
-    ds.attrs.update({
-        'title': f'Static EASE grid data ({label})',
-        'grid_resolution': f"{cfg['grid']['resolution_km']} km",
-        'grid_resolution_meters': res_m,
-        'grid_size': f'{n_x} x {n_y}',
-        'projection': 'Lambert Azimuthal Equal Area (Arctic)',
-        'proj4_string': proj4,
-        'conventions': 'CF-1.8',
-        'ocean_shapefile': str(shp_path),
-        'gebco_source': str(gebco_path),
-    })
+    # Global attributes (CF-1.8 + ACDD-1.3)
+    ds.attrs.update(build_global_attrs(
+        cfg,
+        title=f'Static EASE grid data ({label}): ocean mask and bathymetry',
+        source=('Ocean mask rasterized from Natural Earth 10 m ocean shapefile; '
+                'bathymetry interpolated from GEBCO 1 km'),
+        extra={
+            'ocean_shapefile': str(shp_path),
+            'gebco_source': str(gebco_path),
+        },
+    ))
 
     # Statistics
     n_ocean = int(np.sum(ocean_mask == 1))

@@ -1,0 +1,91 @@
+# =============================================================================
+# Arctic Reconstruction Pipeline — Pan-Arctic 6.25 km configuration
+# =============================================================================
+# Full Arctic, 1400 × 1400 cells × 6.25 km, centered at the North Pole
+# (same coverage as the 25 km run).
+#
+# WARNING — This is a heavy run:
+#   ~1.0–1.5 GB per daily NetCDF (int16 + zlib=4)
+#   ≈ 4–6 TB total over 2011–2021 (~4018 daily files)
+#   ≈ 16× the compute time of the 25 km run
+#
+# Run:
+#   bash run_reconstruction.sh configs/config_arctic_6p25km.yaml
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# EASE Grid Definition (Lambert Azimuthal Equal Area, North Pole)
+# ---------------------------------------------------------------------------
+grid:
+  resolution_km: 6.25
+  center_x_m: 0
+  center_y_m: 0
+  width_km: 8750     # 1400 cells × 6.25 km
+  height_km: 8750    # 1400 cells × 6.25 km
+
+# ---------------------------------------------------------------------------
+# Projection (Lambert Azimuthal Equal Area, North Pole)
+# ---------------------------------------------------------------------------
+projection:
+  lat_0: 90
+  lon_0: 0
+  false_easting: 0
+  false_northing: 0
+
+# ---------------------------------------------------------------------------
+# Time Range
+# ---------------------------------------------------------------------------
+time:
+  start_month: "2011-01"
+  end_month: "2021-12"
+
+# ---------------------------------------------------------------------------
+# Model Training Period (used for out-of-range warnings)
+# ---------------------------------------------------------------------------
+training_period:
+  start_month: "2011-01"
+  end_month: "2021-12"
+
+# ---------------------------------------------------------------------------
+# Data Paths
+# ---------------------------------------------------------------------------
+paths:
+  glorys_monthly_dir: "/media/nicolas/DATOS/Reanalysis/GLORYS_monthly_2010_2022/data"
+  glorys_daily_dir:   "/media/nicolas/DATOS/Reanalysis/GLORYS_daily_arctic_ST_2010_2024"
+
+  sst_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/SST/data"
+  sss_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/SSS/sss_cci_v55/non_regridded_filled_wg"
+  adt_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/AVISO/non_regridded_north_pole_1px"
+
+  gebco_1km_file:           "/home/nicolas/SACO/FRESH-CARE/Data_bathymetry/GEBCO_Sep_2025/data_EASE/gebco_ease_grid_1km.nc"
+  natural_earth_shapefile:  "/home/nicolas/SACO/FRESH-CARE/Arctic_masks/natural_earth_data/ne_10m_ocean/ne_10m_ocean.shp"
+
+  model_path: "trained_models/wg_daily_strat_real_only_mcdo_val/AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth"
+
+  output_dir: "/home/nicolas/SACO/FRESH-CARE/Data_lstm_reconstruction/arctic_6p25km"
+
+# ---------------------------------------------------------------------------
+# Processing Parameters
+# ---------------------------------------------------------------------------
+processing:
+  glorys_mode: "daily"
+  n_mc_samples: 50
+  chunk_size: 2000        # smaller than default 5000 to keep peak RAM/GPU lower at 1400x1400
+  time_window_days: 16
+
+# ---------------------------------------------------------------------------
+# Depth Levels
+# ---------------------------------------------------------------------------
+depth_levels: "woa_standard"
+
+# ---------------------------------------------------------------------------
+# Metadata (written into NetCDF global attributes)
+# ---------------------------------------------------------------------------
+metadata:
+  institution: "Institut de Ciències del Mar (ICM-CSIC)"
+  authors:     "Nicolas Werner-Pelletier, Aleida Rosquete, Maria Sánchez-Urrea, Julia Crespin, Nina Hoareau, Mario Martin, Marta Umbert"
+  contact:     "nicolaswerner@icm.csic.es"
+  project:     "FRESH-CARE (ERC Starting Grant)"
+  version:     "1.0"
+  region:      "Pan-Arctic (≥ ~60°N)"
+  comment:     "Pan-Arctic 3-D temperature/salinity reconstruction at 6.25 km EASE-2 resolution from satellite SST/SSS/ADT and GLORYS12 reanalysis, using an LSTM with Monte-Carlo Dropout."

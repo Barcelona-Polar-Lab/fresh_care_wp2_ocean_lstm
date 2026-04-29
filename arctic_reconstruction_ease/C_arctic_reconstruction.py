@@ -53,6 +53,7 @@ from config_utils import (
     compute_latlon_grids,
     get_ease_latlon_bbox,
     load_pipeline_plan,
+    build_global_attrs,
 )
 
 logging.basicConfig(
@@ -376,6 +377,10 @@ def load_satellite_for_time(base_dir, target_time, window_days, var_kind,
 
     da = xr.concat(chunks, dim='time').sortby('time')
     result = da.interp(time=tgt, method='linear').values
+    if np.all(np.isnan(result)):
+        logger.warning(f"  {var_kind} interpolation returned all-NaN for {target_time:%Y-%m-%d} "
+                       f"(target outside data range {da.time.values[0]} – {da.time.values[-1]})")
+        return None
     return result
 
 
@@ -571,50 +576,83 @@ def reconstruct_single_date(target_date, cfg, model, norm_params,
     time_val = np.datetime64(target_date.strftime('%Y-%m-%dT%H:%M:%S'))
 
     coords = {
-        'time':   ('time',   [time_val]),
-        'depth':  ('depth',  depth, {'units': 'm', 'positive': 'down'}),
-        'y_ease': ('y_ease', y_ease, {'units': 'm', 'axis': 'Y'}),
-        'x_ease': ('x_ease', x_ease, {'units': 'm', 'axis': 'X'}),
+        'time':   ('time',   [time_val], {'standard_name': 'time',
+                                          'long_name': 'Time',
+                                          'axis': 'T'}),
+        'depth':  ('depth',  depth, {'standard_name': 'depth',
+                                     'long_name': 'depth below sea surface',
+                                     'units': 'm', 'positive': 'down',
+                                     'axis': 'Z'}),
+        'y_ease': ('y_ease', y_ease, {'standard_name': 'projection_y_coordinate',
+                                      'long_name': 'EASE-Grid Y coordinate',
+                                      'units': 'm', 'axis': 'Y'}),
+        'x_ease': ('x_ease', x_ease, {'standard_name': 'projection_x_coordinate',
+                                      'long_name': 'EASE-Grid X coordinate',
+                                      'units': 'm', 'axis': 'X'}),
     }
 
-    def _da(arr, long_name, units):
+    def _da(arr, long_name, units, standard_name=None):
+        attrs = {'long_name': long_name, 'units': units,
+                 'grid_mapping': 'ease_grid_mapping'}
+        if standard_name:
+            attrs['standard_name'] = standard_name
         return xr.DataArray(
             arr[np.newaxis],   # add time dim → (1, depth, ny, nx)
             dims=['time', 'depth', 'y_ease', 'x_ease'],
-            attrs={'long_name': long_name, 'units': units,
-                   'grid_mapping': 'ease_grid_mapping'},
+            attrs=attrs,
         )
 
-    def _da2d(arr, long_name, units):
+    def _da2d(arr, long_name, units, standard_name=None):
+        attrs = {'long_name': long_name, 'units': units,
+                 'grid_mapping': 'ease_grid_mapping'}
+        if standard_name:
+            attrs['standard_name'] = standard_name
         return xr.DataArray(
             arr[np.newaxis],
             dims=['time', 'y_ease', 'x_ease'],
-            attrs={'long_name': long_name, 'units': units,
-                   'grid_mapping': 'ease_grid_mapping'},
+            attrs=attrs,
         )
 
     ds_out = xr.Dataset(coords=coords)
 
     # Predicted anomalies
-    ds_out['T_anom_pred'] = _da(grids['T_anom_pred'], 'Predicted temperature anomaly', 'degrees_C')
-    ds_out['S_anom_pred'] = _da(grids['S_anom_pred'], 'Predicted salinity anomaly', 'PSU')
+    ds_out['T_anom_pred'] = _da(grids['T_anom_pred'],
+        'Predicted temperature anomaly', 'degC')
+    ds_out['S_anom_pred'] = _da(grids['S_anom_pred'],
+        'Predicted practical salinity anomaly', '1e-3')
 
-    # Uncertainty
-    ds_out['T_anom_std'] = _da(grids['T_anom_std'], 'Temperature anomaly std', 'degrees_C')
-    ds_out['S_anom_std'] = _da(grids['S_anom_std'], 'Salinity anomaly std', 'PSU')
+    # Uncertainty (MC Dropout standard deviation)
+    ds_out['T_anom_std'] = _da(grids['T_anom_std'],
+        'MC-Dropout standard deviation of temperature anomaly', 'degC')
+    ds_out['S_anom_std'] = _da(grids['S_anom_std'],
+        'MC-Dropout standard deviation of salinity anomaly', '1e-3')
 
     # Reconstructed full profiles
-    ds_out['T_recon'] = _da(T_recon, 'Reconstructed temperature (anom + GLORYS)', 'degrees_C')
-    ds_out['S_recon'] = _da(S_recon, 'Reconstructed salinity (anom + GLORYS)', 'PSU')
+    ds_out['T_recon'] = _da(T_recon,
+        'Reconstructed temperature (anomaly + GLORYS reference)',
+        'degC', standard_name='sea_water_temperature')
+    ds_out['S_recon'] = _da(S_recon,
+        'Reconstructed practical salinity (anomaly + GLORYS reference)',
+        '1e-3', standard_name='sea_water_practical_salinity')
 
     # GLORYS reference
-    ds_out['T_glorys'] = _da(T_glorys, 'GLORYS temperature', 'degrees_C')
-    ds_out['S_glorys'] = _da(S_glorys, 'GLORYS salinity', 'PSU')
+    ds_out['T_glorys'] = _da(T_glorys,
+        'GLORYS reanalysis potential temperature', 'degC',
+        standard_name='sea_water_potential_temperature')
+    ds_out['S_glorys'] = _da(S_glorys,
+        'GLORYS reanalysis practical salinity', '1e-3',
+        standard_name='sea_water_practical_salinity')
 
     # Surface satellite inputs
-    ds_out['SST'] = _da2d(SST, 'Sea surface temperature (satellite)', 'degrees_C')
-    ds_out['SSS'] = _da2d(SSS, 'Sea surface salinity (satellite)', 'PSU')
-    ds_out['ADT'] = _da2d(ADT, 'Absolute dynamic topography (satellite)', 'm')
+    ds_out['SST'] = _da2d(SST,
+        'Sea surface temperature (satellite L4)', 'degC',
+        standard_name='sea_surface_temperature')
+    ds_out['SSS'] = _da2d(SSS,
+        'Sea surface salinity (satellite L4)', '1e-3',
+        standard_name='sea_surface_salinity')
+    ds_out['ADT'] = _da2d(ADT,
+        'Absolute dynamic topography (satellite L4)', 'm',
+        standard_name='sea_surface_height_above_geoid')
 
     # DOY
     ds_out['DOY'] = xr.DataArray([DOY], dims=['time'],
@@ -627,18 +665,31 @@ def reconstruct_single_date(target_date, cfg, model, norm_params,
 
     ds_out['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
-    ds_out.attrs = {
-        'title': f'Arctic reconstruction ({get_resolution_label(cfg)})',
-        'source': 'LSTM MC Dropout + GLORYS reanalysis',
-        'history': f'Created {datetime.now():%Y-%m-%d %H:%M:%S}',
-        'conventions': 'CF-1.8',
-        'grid_resolution': f"{cfg['grid']['resolution_km']} km",
-        'proj4_string': get_proj4_string(cfg),
-        'n_mc_samples': cfg['processing']['n_mc_samples'],
-    }
+    ds_out.attrs = build_global_attrs(
+        cfg,
+        title=f'Arctic 3-D ocean reconstruction ({get_resolution_label(cfg)}, {target_date:%Y-%m-%d})',
+        source=('LSTM with Monte-Carlo Dropout, trained on Arctic in-situ profiles, '
+                'driven by satellite SST/SSS/ADT and added to GLORYS12 reanalysis reference'),
+        extra={
+            'model_path': str(cfg['paths']['model_path']),
+            'glorys_mode': cfg['processing']['glorys_mode'],
+            'n_mc_samples': cfg['processing']['n_mc_samples'],
+            'satellite_time_window_days': cfg['processing']['time_window_days'],
+            'reconstruction_date': target_date.strftime('%Y-%m-%d'),
+        },
+    )
 
     # Encoding — int16 quantization halves file size with negligible precision loss
     encoding = _build_encoding(ds_out)
+
+    # Pin a fixed time reference epoch so every daily file shares the same
+    # axis (xarray would otherwise use the file's own timestamp as epoch,
+    # making cross-file concatenation incorrect without re-decoding).
+    encoding['time'] = {
+        'units': 'days since 1950-01-01T00:00:00+00:00',
+        'calendar': 'standard',
+        'dtype': 'float64',
+    }
 
     ds_out.to_netcdf(out_file, encoding=encoding)
     ds_out.close()
@@ -707,6 +758,7 @@ def main():
     logger.info(f"\nProcessing {len(dates)} target dates\n")
 
     ok = errors = skipped = 0
+    failed_dates = []
     n_dates = len(dates)
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{n_dates}: {dt:%Y-%m-%d} ---")
@@ -718,6 +770,7 @@ def main():
         )
         if result is None:
             errors += 1
+            failed_dates.append(dt)
         else:
             ok += 1
         logger.info(f"  Progress: {i}/{n_dates} ({ok} ok, {errors} errors)")
@@ -728,6 +781,8 @@ def main():
     logger.info("PIPELINE COMPLETE")
     logger.info(f"  Successful: {ok}")
     logger.info(f"  Errors:     {errors}")
+    if failed_dates:
+        logger.warning("  Failed dates: " + ", ".join(d.strftime('%Y-%m-%d') for d in failed_dates))
     logger.info("=" * 60)
 
 

@@ -29,6 +29,7 @@ from config_utils import (
     get_satellite_date_range,
     load_pipeline_plan,
     filter_files_by_date_range,
+    build_global_attrs,
 )
 
 # ============================================================================
@@ -357,17 +358,15 @@ def regrid_file_to_ease(input_path, output_path, x_ease, y_ease,
         ds_out['ease_grid_mapping'] = xr.DataArray(data=0, attrs=grid_mapping_attrs)
 
         ds_out.attrs = dict(ds.attrs)
-        ds_out.attrs.update({
-            'title': ds.attrs.get('title', 'Surface data') + ' on EASE Grid',
-            'grid_resolution': f"{cfg['grid']['resolution_km']} km",
-            'grid_resolution_meters': res_m,
-            'grid_size': f"{cfg['grid']['n_cells_x']} x {cfg['grid']['n_cells_y']}",
-            'projection': 'Lambert Azimuthal Equal Area (Arctic)',
-            'proj4_string': proj4,
-            'regridding_method': 'bilinear interpolation',
-            'regridding_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'original_file': str(input_path.name),
-        })
+        ds_out.attrs.update(build_global_attrs(
+            cfg,
+            title=(ds.attrs.get('title', 'Surface data') + ' on EASE grid'),
+            source=f'Bilinear interpolation from native grid to EASE {get_resolution_label(cfg)}',
+            extra={
+                'regridding_method': 'bilinear interpolation',
+                'original_file': str(input_path.name),
+            },
+        ))
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         encoding = {v: {'zlib': True, 'complevel': 4} for v in ds_out.data_vars}
