@@ -140,7 +140,7 @@ def regrid_glorys_single_timestep(glorys_path, cfg,
             latitude=slice(bbox['lat_min'], bbox['lat_max']),
             longitude=slice(bbox['lon_min'], bbox['lon_max']),
         )
-        logger.info(f"  GLORYS subset: lat {n_lat_orig}→{ds.dims['latitude']}, "
+        logger.debug(f"  GLORYS subset: lat {n_lat_orig}→{ds.dims['latitude']}, "
                     f"lon {n_lon_orig}→{ds.dims['longitude']}")
 
     # Extract sorted coordinate arrays from the (now small) subset
