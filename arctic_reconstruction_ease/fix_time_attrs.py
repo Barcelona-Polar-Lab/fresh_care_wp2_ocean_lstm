@@ -9,7 +9,7 @@ they all share the same epoch::
 
 Why this exists
 ---------------
-Earlier versions of ``C_arctic_reconstruction.py`` did not pin a time epoch
+Earlier versions of ``D_arctic_reconstruction.py`` did not pin a time epoch
 when writing the output NetCDF files. xarray therefore used each file's own
 timestamp as the reference epoch, producing files with::
 
@@ -51,7 +51,7 @@ import cftime
 
 
 # ---------------------------------------------------------------------------
-# Target convention — MUST stay in sync with C_arctic_reconstruction.py
+# Target convention — MUST stay in sync with D_arctic_reconstruction.py
 # ---------------------------------------------------------------------------
 TARGET_UNITS = "days since 1950-01-01T00:00:00+00:00"
 TARGET_CALENDAR = "standard"

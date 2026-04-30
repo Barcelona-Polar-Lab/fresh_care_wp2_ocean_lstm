@@ -2,36 +2,34 @@
 # ===========================================================================
 # run_reconstruction.sh — Arctic Reconstruction Pipeline Orchestrator
 #
+# The pipeline is split into five stages so that the heavy LSTM step (D)
+# can be moved to a remote GPU server without shipping the 700 GB GLORYS
+# archive. Steps A, B, C and E need GLORYS / satellite raw data;
+# Step D only needs the small intermediates produced by A, B and C.
+#
+#   A   — Ocean mask + bathymetry on EASE grid (static, run once).
+#   B   — Regrid satellite SST/SSS/ADT to EASE grid (run once / resolution).
+#   C   — Regrid GLORYS surface (depth=0) to EASE grid, per date.
+#   D   — LSTM + MC-Dropout anomaly inference, per date.
+#   E   — Combine D anomalies with full 3-D GLORYS + satellite, per date,
+#         producing the final published NetCDF (schema unchanged).
+#
 # Usage:
-#   bash run_reconstruction.sh [--no-preflight] <config1.yaml> [config2.yaml ...]
+#   bash run_reconstruction.sh [--mode=MODE] [--no-preflight | --preflight-keep-all] \
+#       <config1.yaml> [config2.yaml ...]
 #
-# Examples:
-#   # Pan-Arctic 25 km run (interactive preflight):
-#   bash run_reconstruction.sh configs/config_arctic_25km.yaml
-#
-#   # Pan-Arctic 6.25 km run (heavy — see config header):
-#   bash run_reconstruction.sh configs/config_arctic_6p25km.yaml
-#
-#   # Run a single region interactively (will ask what to reuse/redo):
-#   bash run_reconstruction.sh configs/config_bering.yaml
-#
-#   # Run all four regions unattended, keeping existing files (fill gaps only):
-#   bash run_reconstruction.sh --preflight-keep-all configs/config_bering.yaml configs/config_davis.yaml configs/config_fram.yaml configs/config_barents.yaml
-#
-#   # Run all four regions from scratch (overwrites everything):
-#   bash run_reconstruction.sh --no-preflight configs/config_bering.yaml configs/config_davis.yaml configs/config_fram.yaml configs/config_barents.yaml
-#
-# Steps executed (per config):
-#   A  — Create ocean mask + bathymetry on EASE grid  (static, run once)
-#   B  — Regrid satellite surface data to EASE grid   (run once per resolution)
-#   C  — Run LSTM reconstruction for every target date
+# Modes:
+#   local            (default) Run A, B, C, D, E end-to-end on this machine.
+#   server-prep      Run A, B, C only — produces the small intermediate
+#                    bundle to ship to the GPU server.
+#   server-anomalies Run D only — needs A/B/C intermediates already in place.
+#                    Use this on the remote GPU server.
+#   local-finalize   Run E only — needs anomalies + raw GLORYS available.
 #
 # Options:
-#   --no-preflight       Skip interactive checks; run everything fresh (overwrites existing).
-#   --preflight-keep-all Skip interactive checks; keep all existing files, only fill gaps.
-#
-# D_build_model_input.py is deprecated; its logic is absorbed into C.
-# GLORYS regridding is called per-timestep from inside C.
+#   --mode=MODE              See above (default: local).
+#   --no-preflight           Skip interactive checks; run everything fresh.
+#   --preflight-keep-all     Skip interactive checks; only fill gaps.
 # ===========================================================================
 set -euo pipefail
 
@@ -40,16 +38,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---- Parse options -------------------------------------------------------
 NO_PREFLIGHT=false
 KEEP_ALL=false
+MODE="local"
 CONFIGS=()
 
 for arg in "$@"; do
     case "$arg" in
         --no-preflight) NO_PREFLIGHT=true ;;
         --preflight-keep-all) KEEP_ALL=true ;;
+        --mode=*) MODE="${arg#--mode=}" ;;
+        --mode) echo "ERROR: --mode requires =VALUE form, e.g. --mode=local" >&2; exit 1 ;;
         -*) echo "ERROR: Unknown option: $arg" >&2; exit 1 ;;
         *) CONFIGS+=("$arg") ;;
     esac
 done
+
+case "$MODE" in
+    local|server-prep|server-anomalies|local-finalize) ;;
+    *)
+        echo "ERROR: Unknown --mode='$MODE'. Valid: local | server-prep | server-anomalies | local-finalize" >&2
+        exit 1
+        ;;
+esac
 
 if [[ "$NO_PREFLIGHT" == true && "$KEEP_ALL" == true ]]; then
     echo "ERROR: --no-preflight and --preflight-keep-all are mutually exclusive" >&2
@@ -57,9 +66,21 @@ if [[ "$NO_PREFLIGHT" == true && "$KEEP_ALL" == true ]]; then
 fi
 
 if [[ ${#CONFIGS[@]} -eq 0 ]]; then
-    echo "Usage: $0 [--no-preflight] <config1.yaml> [config2.yaml ...]" >&2
+    echo "Usage: $0 [--mode=MODE] [--no-preflight | --preflight-keep-all] <config1.yaml> ..." >&2
     exit 1
 fi
+
+run_step_A=false
+run_step_B=false
+run_step_C=false
+run_step_D=false
+run_step_E=false
+case "$MODE" in
+    local)            run_step_A=true; run_step_B=true; run_step_C=true; run_step_D=true; run_step_E=true ;;
+    server-prep)      run_step_A=true; run_step_B=true; run_step_C=true ;;
+    server-anomalies) run_step_D=true ;;
+    local-finalize)   run_step_E=true ;;
+esac
 
 # ---- Process each config -------------------------------------------------
 TOTAL=${#CONFIGS[@]}
@@ -77,7 +98,7 @@ for (( i=0; i<TOTAL; i++ )); do
 
     echo ""
     echo "============================================================"
-    echo " Arctic Reconstruction Pipeline  [$N/$TOTAL]"
+    echo " Arctic Reconstruction Pipeline  [$N/$TOTAL]   mode=$MODE"
     echo " Config: $CONFIG"
     echo "============================================================"
 
@@ -99,6 +120,8 @@ cfg = load_config(sys.argv[1])
 plan = {
     'run_step_A': True,
     'run_step_B': {'SST': True, 'SSS': True, 'ADT': True},
+    'overwrite_glorys_surface': False,
+    'overwrite_anomalies': False,
     'overwrite_reconstruction': False,
 }
 # Skip Step A entirely if static file already exists
@@ -119,6 +142,8 @@ cfg = load_config(sys.argv[1])
 plan = {
     'run_step_A': True,
     'run_step_B': {'SST': True, 'SSS': True, 'ADT': True},
+    'overwrite_glorys_surface': True,
+    'overwrite_anomalies': True,
     'overwrite_reconstruction': True,
 }
 plan_path = get_pipeline_plan_path(cfg)
@@ -130,19 +155,39 @@ print('  Preflight skipped — running fresh (overwrite all)')
     fi
 
     # ---- Step A: Static data (mask + bathymetry) -------------------------
-    echo ""
-    echo ">>> Step A: Ocean mask & bathymetry"
-    python "$SCRIPT_DIR/A_create_ocean_mask.py" --config "$CONFIG"
+    if [[ "$run_step_A" == true ]]; then
+        echo ""
+        echo ">>> Step A: Ocean mask & bathymetry"
+        python "$SCRIPT_DIR/A_create_ocean_mask.py" --config "$CONFIG"
+    fi
 
     # ---- Step B: Satellite regridding ------------------------------------
-    echo ""
-    echo ">>> Step B: Satellite data → EASE grid"
-    python "$SCRIPT_DIR/B_surf_data_to_EASE.py" --config "$CONFIG"
+    if [[ "$run_step_B" == true ]]; then
+        echo ""
+        echo ">>> Step B: Satellite data → EASE grid"
+        python "$SCRIPT_DIR/B_surf_data_to_EASE.py" --config "$CONFIG"
+    fi
 
-    # ---- Step C: Reconstruction ------------------------------------------
-    echo ""
-    echo ">>> Step C: LSTM reconstruction"
-    python "$SCRIPT_DIR/C_arctic_reconstruction.py" --config "$CONFIG"
+    # ---- Step C: GLORYS surface regridding ------------------------------
+    if [[ "$run_step_C" == true ]]; then
+        echo ""
+        echo ">>> Step C: GLORYS surface → EASE grid"
+        python "$SCRIPT_DIR/C_glorys_surface_to_EASE.py" --config "$CONFIG"
+    fi
+
+    # ---- Step D: Anomaly inference ---------------------------------------
+    if [[ "$run_step_D" == true ]]; then
+        echo ""
+        echo ">>> Step D: LSTM anomaly inference"
+        python "$SCRIPT_DIR/D_arctic_reconstruction.py" --config "$CONFIG"
+    fi
+
+    # ---- Step E: Finalize with full GLORYS -------------------------------
+    if [[ "$run_step_E" == true ]]; then
+        echo ""
+        echo ">>> Step E: Finalize with full GLORYS reference"
+        python "$SCRIPT_DIR/E_finalize_with_glorys.py" --config "$CONFIG"
+    fi
 
     echo ""
     echo "============================================================"
@@ -152,5 +197,5 @@ done
 
 echo ""
 echo "============================================================"
-echo " All $TOTAL reconstructions completed."
+echo " All $TOTAL pipelines completed (mode=$MODE)."
 echo "============================================================"

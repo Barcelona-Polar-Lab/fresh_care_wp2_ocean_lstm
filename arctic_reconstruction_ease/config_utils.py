@@ -14,14 +14,36 @@ Provides:
 """
 
 import json
+import logging
 import re
 import numpy as np
 import pyproj
 import yaml
 import sys
+import xarray as xr
+from glob import glob
 from pathlib import Path
 from datetime import datetime, timedelta
 import calendar
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# SHARED ENCODING / METADATA CONSTANTS
+# ============================================================================
+
+# Time epoch shared by every output NetCDF in the pipeline. Pinning a
+# fixed reference date makes daily files concatenate cleanly without
+# per-file decoding tricks.
+TIME_ENCODING = {
+    'units': 'days since 1950-01-01T00:00:00+00:00',
+    'calendar': 'standard',
+    'dtype': 'float64',
+}
+
+# Names of satellite variables inside the EASE-regridded intermediate files.
+SAT_VARS = {'SST': 'analysed_sst', 'SSS': 'sss', 'ADT': 'adt'}
 
 
 # ============================================================================
@@ -649,6 +671,198 @@ def get_reconstruction_dir(cfg):
     return Path(cfg['paths']['output_dir']) / 'final_TS_reconstruction'
 
 
+def get_glorys_surface_dir(cfg):
+    """Return the directory holding per-date GLORYS-surface intermediates
+    written by Step C and consumed by Step D."""
+    return get_intermediate_dir(cfg) / 'glorys_surface'
+
+
+def get_anomalies_dir(cfg):
+    """Return the directory holding per-date anomaly intermediates written
+    by Step D and consumed by Step E."""
+    return get_intermediate_dir(cfg) / 'anomalies'
+
+
+def get_glorys_surface_file(cfg, target_date):
+    """Path to the GLORYS-surface intermediate for a given date."""
+    return get_glorys_surface_dir(cfg) / f"glorys_surf_{target_date:%Y%m%d}.nc"
+
+
+def get_anomalies_file(cfg, target_date):
+    """Path to the anomalies intermediate for a given date."""
+    return get_anomalies_dir(cfg) / f"anomalies_{target_date:%Y%m%d}.nc"
+
+
+# ============================================================================
+# NetCDF ENCODING (int16 quantization + zlib compression)
+# ============================================================================
+
+def build_var_encoding(ds, chunk_t=1, chunk_d=17, chunk_xy=50):
+    """
+    Build per-variable NetCDF encoding with int16 quantization for float32
+    variables and zlib=4 compression for everything else.
+
+    float32 → int16 mapping:
+        scale_factor = (vmax - vmin) / 65534
+        add_offset   = vmin + scale_factor * 32767
+        _FillValue   = -32768  (int16 min, reserved for NaN/masked)
+
+    Quantization error ≤ scale_factor / 2, well below observational
+    uncertainty for all oceanographic fields here.
+    """
+    encoding = {}
+    for v in ds.data_vars:
+        da = ds[v]
+        if v == 'ease_grid_mapping':
+            encoding[v] = {'zlib': False}
+            continue
+
+        ndim = da.ndim
+        if ndim == 4:
+            chunks = (chunk_t, chunk_d, chunk_xy, chunk_xy)
+        elif ndim == 3:
+            chunks = (chunk_t, chunk_xy, chunk_xy)
+        elif ndim == 2:
+            chunks = (chunk_xy, chunk_xy)
+        else:
+            encoding[v] = {'zlib': False}
+            continue
+
+        base = {'zlib': True, 'complevel': 4, 'shuffle': True,
+                'chunksizes': chunks}
+
+        if da.dtype == np.float32:
+            arr = da.values
+            vmin = float(np.nanmin(arr))
+            vmax = float(np.nanmax(arr))
+            if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
+                sf = (vmax - vmin) / 65534.0
+                offset = vmin + sf * 32767.0
+                base.update({
+                    'dtype': 'int16',
+                    'scale_factor': sf,
+                    'add_offset': offset,
+                    '_FillValue': np.iinfo(np.int16).min,
+                })
+            else:
+                base['dtype'] = 'float32'
+        else:
+            base['dtype'] = str(da.dtype)
+
+        encoding[v] = base
+
+    return encoding
+
+
+# ============================================================================
+# SATELLITE DATA LOADING (EASE-regridded intermediates)
+# ============================================================================
+
+def _find_satellite_files(base_dir, target_time, window_days, var_kind):
+    """
+    Gather satellite NetCDF files within ±window_days of *target_time*.
+
+    *var_kind* is one of 'SST', 'SSS', 'ADT'. The expected directory
+    layout matches what Step B writes.
+    """
+    base_dir = Path(base_dir)
+    start = (target_time - timedelta(days=window_days)).replace(
+        hour=0, minute=0, second=0)
+    end = (target_time + timedelta(days=window_days)).replace(
+        hour=23, minute=59, second=59)
+
+    files = []
+
+    if var_kind == 'SST':
+        current = start
+        while current <= end:
+            y, m, d = current.year, current.month, current.day
+            pat = base_dir / str(y) / f'{m:02d}' / f'*_{y}-{m:02d}-{d:02d}_*.nc'
+            files.extend(glob(str(pat)))
+            current += timedelta(days=1)
+
+    elif var_kind == 'SSS':
+        years = set()
+        current = start
+        while current <= end:
+            years.add(current.year)
+            current += timedelta(days=1)
+        for y in sorted(years):
+            p = base_dir / f'sss_merge_cci_{y}_EASE_filled_wg.nc'
+            if p.exists():
+                files.append(str(p))
+
+    elif var_kind == 'ADT':
+        years = set()
+        current = start
+        while current <= end:
+            years.add(current.year)
+            current += timedelta(days=1)
+        for y in sorted(years):
+            ydir = base_dir / str(y)
+            if not ydir.is_dir():
+                continue
+            for f in sorted(ydir.glob('*.nc')):
+                parts = f.stem.split('_')
+                for part in parts:
+                    if len(part) == 8 and part.isdigit():
+                        try:
+                            fd = datetime.strptime(part, '%Y%m%d')
+                            if start <= fd <= end:
+                                files.append(str(f))
+                        except ValueError:
+                            pass
+                        break
+
+    return sorted(set(files))
+
+
+def load_satellite_for_time(base_dir, target_time, window_days, var_kind,
+                            var_name=None):
+    """
+    Load satellite data in a ±window around *target_time* and linearly
+    interpolate to the exact target date.
+
+    Returns a 2-D numpy array (y_ease, x_ease) or None on failure.
+    """
+    if var_name is None:
+        var_name = SAT_VARS[var_kind]
+
+    files = _find_satellite_files(base_dir, target_time, window_days, var_kind)
+    if not files:
+        logger.warning(f"No {var_kind} files for {target_time:%Y-%m-%d}")
+        return None
+
+    start = (target_time - timedelta(days=window_days)).replace(
+        hour=0, minute=0, second=0)
+    end = (target_time + timedelta(days=window_days)).replace(
+        hour=23, minute=59, second=59)
+    tgt = np.datetime64(target_time)
+
+    chunks = []
+    for f in files:
+        ds = xr.open_dataset(f)
+        if 'time' in ds.dims:
+            ds = ds.sel(time=slice(start, end))
+        chunk = ds[var_name].load()
+        ds.close()
+        if chunk.sizes.get('time', 1) > 0:
+            chunks.append(chunk)
+
+    if not chunks:
+        logger.warning(f"No {var_kind} data in window for {target_time:%Y-%m-%d}")
+        return None
+
+    da = xr.concat(chunks, dim='time').sortby('time')
+    result = da.interp(time=tgt, method='linear').values
+    if np.all(np.isnan(result)):
+        logger.warning(
+            f"  {var_kind} interpolation returned all-NaN for {target_time:%Y-%m-%d} "
+            f"(target outside data range {da.time.values[0]} – {da.time.values[-1]})")
+        return None
+    return result
+
+
 # ============================================================================
 # SATELLITE DATE-RANGE FILTERING
 # ============================================================================
@@ -750,7 +964,25 @@ def run_preflight(cfg):
                 continue
         plan['run_step_B'][name] = True
 
-    # --- Reconstruction files (Step C) ---
+    # --- GLORYS-surface intermediates (Step C) ---
+    gs_dir = get_glorys_surface_dir(cfg)
+    if gs_dir.exists() and any(gs_dir.glob('glorys_surf_*.nc')):
+        n = len(list(gs_dir.glob('glorys_surf_*.nc')))
+        ans = input(f"  GLORYS surface: {n} files found. Overwrite? [y/N]: ").strip().lower()
+        plan['overwrite_glorys_surface'] = (ans == 'y')
+    else:
+        plan['overwrite_glorys_surface'] = False
+
+    # --- Anomaly intermediates (Step D) ---
+    an_dir = get_anomalies_dir(cfg)
+    if an_dir.exists() and any(an_dir.glob('anomalies_*.nc')):
+        n = len(list(an_dir.glob('anomalies_*.nc')))
+        ans = input(f"  Anomalies: {n} files found. Overwrite? [y/N]: ").strip().lower()
+        plan['overwrite_anomalies'] = (ans == 'y')
+    else:
+        plan['overwrite_anomalies'] = False
+
+    # --- Final reconstruction files (Step E) ---
     recon_dir = get_reconstruction_dir(cfg)
     if recon_dir.exists():
         nc = list(recon_dir.glob('reconstruction_*.nc'))
@@ -769,12 +1001,13 @@ def run_preflight(cfg):
         json.dump(plan, f, indent=2)
 
     print("\n  Pipeline plan:")
-    print(f"    Step A (static):  {'SKIP (reuse)' if not plan['run_step_A'] else 'RUN'}")
+    print(f"    Step A  (static):           {'SKIP (reuse)' if not plan['run_step_A'] else 'RUN'}")
     for n in ('SST', 'SSS', 'ADT'):
         run = plan['run_step_B'].get(n, True)
-        print(f"    Step B ({n}):    {'SKIP (reuse)' if not run else 'RUN'}")
-    ow = plan['overwrite_reconstruction']
-    print(f"    Step C (recon):   {'OVERWRITE existing' if ow else 'KEEP existing, fill gaps'}")
+        print(f"    Step B  ({n}):              {'SKIP (reuse)' if not run else 'RUN'}")
+    print(f"    Step C  (GLORYS surface):   {'OVERWRITE existing' if plan['overwrite_glorys_surface'] else 'KEEP existing, fill gaps'}")
+    print(f"    Step D  (anomalies):        {'OVERWRITE existing' if plan['overwrite_anomalies'] else 'KEEP existing, fill gaps'}")
+    print(f"    Step E  (final recon):      {'OVERWRITE existing' if plan['overwrite_reconstruction'] else 'KEEP existing, fill gaps'}")
     print()
     return plan
 
@@ -784,9 +1017,13 @@ def load_pipeline_plan(cfg):
     pp = get_pipeline_plan_path(cfg)
     if pp.exists():
         with open(pp) as f:
-            return json.load(f)
-    return {
-        'run_step_A': True,
-        'run_step_B': {'SST': True, 'SSS': True, 'ADT': True},
-        'overwrite_reconstruction': False,
-    }
+            plan = json.load(f)
+    else:
+        plan = {}
+    # Backfill defaults so older plan files keep working
+    plan.setdefault('run_step_A', True)
+    plan.setdefault('run_step_B', {'SST': True, 'SSS': True, 'ADT': True})
+    plan.setdefault('overwrite_glorys_surface', False)
+    plan.setdefault('overwrite_anomalies', False)
+    plan.setdefault('overwrite_reconstruction', False)
+    return plan
