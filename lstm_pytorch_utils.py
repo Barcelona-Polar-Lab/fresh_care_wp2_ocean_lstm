@@ -318,7 +318,10 @@ def mc_dropout_predict_batch(model, X_batch, n_mc_samples=50, device=None,
         X_batch = torch.FloatTensor(X_batch)
     X_batch = X_batch.to(device)
     
-    # Initialize Welford running statistics
+    # Initialize Welford running statistics ON GPU.
+    # Keeping the accumulator on GPU eliminates the per-iteration .cpu()
+    # synchronization, which is the dominant cost for small models like
+    # this one. Single host-device transfer happens after the loop.
     running_mean = None
     running_m2 = None
     
@@ -328,21 +331,22 @@ def mc_dropout_predict_batch(model, X_batch, n_mc_samples=50, device=None,
     
     with torch.no_grad():
         for mc_sample in mc_iter:
-            y_pred = model(X_batch).cpu().numpy()
+            y_pred = model(X_batch)  # GPU tensor, no host transfer
             
             if running_mean is None:
-                running_mean = np.zeros_like(y_pred)
-                running_m2 = np.zeros_like(y_pred)
+                running_mean = torch.zeros_like(y_pred)
+                running_m2 = torch.zeros_like(y_pred)
             
-            # Welford online update
+            # Welford online update (on GPU)
             count = mc_sample + 1
             delta = y_pred - running_mean
-            running_mean += delta / count
+            running_mean = running_mean + delta / count
             delta2 = y_pred - running_mean
-            running_m2 += delta * delta2
+            running_m2 = running_m2 + delta * delta2
     
-    y_mean = running_mean
-    y_std = np.sqrt(running_m2 / n_mc_samples)
+    # Single host-device transfer at the end
+    y_mean = running_mean.cpu().numpy()
+    y_std = torch.sqrt(running_m2 / n_mc_samples).cpu().numpy()
     
     return y_mean, y_std
 
