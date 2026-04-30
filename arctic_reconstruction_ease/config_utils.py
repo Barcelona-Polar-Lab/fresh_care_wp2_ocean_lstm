@@ -15,6 +15,7 @@ Provides:
 
 import json
 import logging
+import os
 import re
 import numpy as np
 import pyproj
@@ -752,6 +753,26 @@ def build_var_encoding(ds, chunk_t=1, chunk_d=17, chunk_xy=50):
         encoding[v] = base
 
     return encoding
+
+
+def atomic_to_netcdf(ds, out_path, encoding=None, **kwargs):
+    """Write *ds* to *out_path* atomically.
+
+    Writes to a sibling ``<out_path>.tmp`` then ``os.replace`` to the final
+    path. POSIX guarantees ``os.replace`` is atomic on the same filesystem,
+    so a Ctrl+C / crash during the write leaves either the previous file
+    intact (if any) or no file at all — never a corrupt partial NetCDF.
+
+    Stale ``.tmp`` files from a previous interrupted run are removed before
+    writing.
+    """
+    out_path = Path(out_path)
+    tmp_path = out_path.with_suffix(out_path.suffix + '.tmp')
+    if tmp_path.exists():
+        tmp_path.unlink()
+    ds.to_netcdf(tmp_path, encoding=encoding, **kwargs)
+    os.replace(tmp_path, out_path)
+    return out_path
 
 
 # ============================================================================

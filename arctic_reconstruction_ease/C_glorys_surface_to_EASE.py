@@ -27,6 +27,7 @@ import xarray as xr
 warnings.filterwarnings("ignore")
 
 from config_utils import (
+    atomic_to_netcdf,
     TIME_ENCODING,
     build_var_encoding,
     check_time_range,
@@ -120,7 +121,7 @@ def process_single_date(target_date, cfg, x_ease, y_ease, gm_attrs,
     encoding = build_var_encoding(ds_out)
     encoding['time'] = dict(TIME_ENCODING)
 
-    ds_out.to_netcdf(out_file, encoding=encoding)
+    atomic_to_netcdf(ds_out, out_file, encoding=encoding)
     ds_out.close()
     return out_file, 'ok'
 

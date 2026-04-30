@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lstm_pytorch_utils import load_model_checkpoint, mc_dropout_predict_chunked
 
 from config_utils import (
+    atomic_to_netcdf,
     SAT_VARS,
     TIME_ENCODING,
     build_var_encoding,
@@ -287,7 +288,7 @@ def reconstruct_single_date(target_date, cfg, model, norm_params,
     encoding = build_var_encoding(ds_out)
     encoding['time'] = dict(TIME_ENCODING)
 
-    ds_out.to_netcdf(out_file, encoding=encoding)
+    atomic_to_netcdf(ds_out, out_file, encoding=encoding)
     ds_out.close()
     del grids
     logger.info(f"  [{date_str}] Saved → {out_file.name}")

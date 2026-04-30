@@ -35,6 +35,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config_utils import (
+    atomic_to_netcdf,
     SAT_VARS,
     TIME_ENCODING,
     build_global_attrs,
@@ -246,7 +247,7 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     encoding = build_var_encoding(ds_out)
     encoding['time'] = dict(TIME_ENCODING)
 
-    ds_out.to_netcdf(out_file, encoding=encoding)
+    atomic_to_netcdf(ds_out, out_file, encoding=encoding)
     ds_out.close()
     logger.info(f"  [{date_str}] Saved → {out_file.name}")
     return out_file
