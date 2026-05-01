@@ -15,7 +15,8 @@
 #         producing the final published NetCDF (schema unchanged).
 #
 # Usage:
-#   bash run_reconstruction.sh [--mode=MODE] [--no-preflight | --preflight-keep-all] \
+#   bash run_reconstruction.sh [--mode=MODE] [--host=HOST] \
+#       [--no-preflight | --preflight-keep-all] \
 #       <config1.yaml> [config2.yaml ...]
 #
 # Modes:
@@ -28,6 +29,11 @@
 #
 # Options:
 #   --mode=MODE              See above (default: local).
+#   --host=HOST              Which host overrides to apply from the YAML
+#                            (default: local). Common values: local, server.
+#                            Sets PIPELINE_HOST for the python steps; any keys
+#                            under host_overrides.<HOST> in the YAML are
+#                            merged onto cfg['paths'].
 #   --no-preflight           Skip interactive checks; run everything fresh.
 #   --preflight-keep-all     Skip interactive checks; only fill gaps.
 # ===========================================================================
@@ -39,6 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NO_PREFLIGHT=false
 KEEP_ALL=false
 MODE="local"
+HOST="local"
 CONFIGS=()
 
 for arg in "$@"; do
@@ -47,6 +54,8 @@ for arg in "$@"; do
         --preflight-keep-all) KEEP_ALL=true ;;
         --mode=*) MODE="${arg#--mode=}" ;;
         --mode) echo "ERROR: --mode requires =VALUE form, e.g. --mode=local" >&2; exit 1 ;;
+        --host=*) HOST="${arg#--host=}" ;;
+        --host) echo "ERROR: --host requires =VALUE form, e.g. --host=server" >&2; exit 1 ;;
         -*) echo "ERROR: Unknown option: $arg" >&2; exit 1 ;;
         *) CONFIGS+=("$arg") ;;
     esac
@@ -59,6 +68,8 @@ case "$MODE" in
         exit 1
         ;;
 esac
+
+export PIPELINE_HOST="$HOST"
 
 if [[ "$NO_PREFLIGHT" == true && "$KEEP_ALL" == true ]]; then
     echo "ERROR: --no-preflight and --preflight-keep-all are mutually exclusive" >&2
@@ -98,7 +109,7 @@ for (( i=0; i<TOTAL; i++ )); do
 
     echo ""
     echo "============================================================"
-    echo " Arctic Reconstruction Pipeline  [$N/$TOTAL]   mode=$MODE"
+    echo " Arctic Reconstruction Pipeline  [$N/$TOTAL]   mode=$MODE  host=$HOST"
     echo " Config: $CONFIG"
     echo "============================================================"
 
@@ -197,5 +208,5 @@ done
 
 echo ""
 echo "============================================================"
-echo " All $TOTAL pipelines completed (mode=$MODE)."
+echo " All $TOTAL pipelines completed (mode=$MODE, host=$HOST)."
 echo "============================================================"

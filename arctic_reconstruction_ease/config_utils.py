@@ -89,6 +89,15 @@ def load_config(yaml_path):
     with open(yaml_path, 'r') as f:
         cfg = yaml.safe_load(f)
 
+    # --- apply host overrides (PIPELINE_HOST env var, default 'local') ---
+    # When PIPELINE_HOST != 'local', any keys under cfg['host_overrides'][HOST]
+    # are merged on top of cfg['paths']. This lets the same YAML drive both
+    # local and remote runs (currently used for Phase D on bec112).
+    host = os.environ.get('PIPELINE_HOST', 'local')
+    overrides = (cfg.get('host_overrides') or {}).get(host, {}) or {}
+    if overrides:
+        cfg.setdefault('paths', {}).update(overrides)
+
     # --- basic presence checks ---
     for section in ('grid', 'projection', 'time', 'paths', 'processing'):
         if section not in cfg:

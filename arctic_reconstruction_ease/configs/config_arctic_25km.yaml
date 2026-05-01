@@ -55,9 +55,22 @@ paths:
   gebco_1km_file:           "/home/nicolas/SACO/FRESH-CARE/Data_bathymetry/GEBCO_Sep_2025/data_EASE/gebco_ease_grid_1km.nc"
   natural_earth_shapefile:  "/home/nicolas/SACO/FRESH-CARE/Arctic_masks/natural_earth_data/ne_10m_ocean/ne_10m_ocean.shp"
 
-  model_path: "trained_models/wg_daily_strat_real_only_mcdo_val/AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth"
+  model_path: "/home/nicolas/SACO/FRESH-CARE/Codes/WP2/buongiorno_to_pytorch_padding/AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth"
 
   output_dir: "/home/nicolas/SACO/FRESH-CARE/Data_lstm_reconstruction/arctic_25km"
+
+# ---------------------------------------------------------------------------
+# Host overrides — keys here override cfg['paths'] when PIPELINE_HOST=<host>.
+# Selected via `bash run_reconstruction.sh --host=<host> ...` (default: local).
+# Only Phase D currently runs remotely, so only the paths Phase D needs
+# (output_dir for intermediates/anomalies, model_path for the LSTM weights)
+# need to be defined here. Other paths (raw GLORYS, satellite, GEBCO, NE)
+# are unused by Phase D and can stay at their local values.
+# ---------------------------------------------------------------------------
+host_overrides:
+  server:
+    output_dir: "/data/FRESH-CARE/data_for_LSTM/reconst_inputs/arctic_25km"
+    model_path: "/home/FRESH-CARE/Codes/WP2_lstm/arctic_reconstruction_ease/trained_model/model.pth"
 
 # ---------------------------------------------------------------------------
 # Processing Parameters
