@@ -45,6 +45,7 @@ from config_utils import (
     check_time_range,
     create_ease_grid,
     create_transformers,
+    format_eta,
     get_anomalies_file,
     get_anomalies_dir,
     get_ease_latlon_bbox,
@@ -369,6 +370,8 @@ def main():
     ok = errors = 0
     failed_dates = []
     n_dates = len(dates)
+    import time as _time
+    t0 = _time.monotonic()
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{n_dates}: {dt:%Y-%m-%d} ---")
         result = reconstruct_single_date(
@@ -381,7 +384,7 @@ def main():
             failed_dates.append(dt)
         else:
             ok += 1
-        logger.info(f"  Progress: {i}/{n_dates} ({ok} ok, {errors} errors)")
+        logger.info(f"  Progress: {i}/{n_dates} ({ok} ok, {errors} errors) | {format_eta(t0, i, n_dates)}")
 
     static_ds.close()
 

@@ -30,6 +30,7 @@ from config_utils import (
     load_pipeline_plan,
     filter_files_by_date_range,
     build_global_attrs,
+    format_eta,
 )
 
 # ============================================================================
@@ -403,6 +404,8 @@ def process_directory(input_dir, output_dir, dataset_name,
         logger.info(f"  {dataset_name}: {total} files to process")
 
     processed = reused = errors = 0
+    import time as _time
+    t0 = _time.monotonic()
     for i, nc_file in enumerate(nc_files, 1):
         rel = nc_file.relative_to(input_dir)
         out_file = output_dir / rel
@@ -423,7 +426,7 @@ def process_directory(input_dir, output_dir, dataset_name,
 
         if i % 100 == 0 or i == total:
             logger.info(f"  {dataset_name}: {i}/{total} "
-                        f"({processed} new, {reused} reused)")
+                        f"({processed} new, {reused} reused) | {format_eta(t0, i, total)}")
 
     logger.info(f"  {dataset_name} done: {processed} processed, "
                 f"{reused} existing, {errors} errors")

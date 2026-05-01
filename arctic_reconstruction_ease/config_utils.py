@@ -775,6 +775,42 @@ def atomic_to_netcdf(ds, out_path, encoding=None, **kwargs):
     return out_path
 
 
+def format_eta(start_time, done, total):
+    """Return a compact progress string with elapsed / rate / ETA.
+
+    Example output::
+        elapsed=12m, rate=8.3/min, ETA=18:42 (~6h 04m left)
+
+    *start_time* is a ``time.monotonic()`` value captured at loop start.
+    *done* is the count of items completed so far (including skipped),
+    *total* is the total number of items planned.
+    """
+    import time as _time
+    elapsed = max(_time.monotonic() - start_time, 1e-6)
+    rate = done / elapsed  # items per second
+    if rate <= 0 or done >= total:
+        return f"elapsed={_fmt_dur(elapsed)}"
+    remaining = (total - done) / rate
+    eta_abs = datetime.now() + timedelta(seconds=remaining)
+    return (f"elapsed={_fmt_dur(elapsed)}, rate={rate*60:.1f}/min, "
+            f"ETA={eta_abs:%H:%M} (~{_fmt_dur(remaining)} left)")
+
+
+def _fmt_dur(seconds):
+    """Compact duration: '45s', '12m', '3h 04m', '2d 05h'."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h {m:02d}m"
+    d, h = divmod(h, 24)
+    return f"{d}d {h:02d}h"
+
+
 # ============================================================================
 # SATELLITE DATA LOADING (EASE-regridded intermediates)
 # ============================================================================

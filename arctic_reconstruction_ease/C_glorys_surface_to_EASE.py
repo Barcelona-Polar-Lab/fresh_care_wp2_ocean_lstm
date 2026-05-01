@@ -33,6 +33,7 @@ from config_utils import (
     check_time_range,
     create_ease_grid,
     create_transformers,
+    format_eta,
     get_ease_latlon_bbox,
     get_glorys_file_for_date,
     get_glorys_surface_dir,
@@ -159,6 +160,8 @@ def main():
     logger.info("=" * 60)
 
     n_ok = n_skip = n_err = 0
+    import time as _time
+    t0 = _time.monotonic()
     for i, dt in enumerate(dates, 1):
         result, status = process_single_date(
             dt, cfg, x_ease, y_ease, gm_attrs, tf_from, bbox,
@@ -167,7 +170,7 @@ def main():
         if status == 'ok':
             n_ok += 1
             if i % 50 == 0 or i == len(dates):
-                logger.info(f"  [{i}/{len(dates)}] processed (ok={n_ok}, skip={n_skip}, err={n_err})")
+                logger.info(f"  [{i}/{len(dates)}] processed (ok={n_ok}, skip={n_skip}, err={n_err}) | {format_eta(t0, i, len(dates))}")
         elif status == 'skip':
             n_skip += 1
         else:

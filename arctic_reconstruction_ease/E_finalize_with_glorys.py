@@ -43,6 +43,7 @@ from config_utils import (
     check_time_range,
     create_ease_grid,
     create_transformers,
+    format_eta,
     get_anomalies_file,
     get_ease_latlon_bbox,
     get_glorys_file_for_date,
@@ -298,6 +299,8 @@ def main():
 
     ok = errors = 0
     failed_dates = []
+    import time as _time
+    t0 = _time.monotonic()
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{len(dates)}: {dt:%Y-%m-%d} ---")
         result = finalize_single_date(
@@ -309,7 +312,7 @@ def main():
             failed_dates.append(dt)
         else:
             ok += 1
-        logger.info(f"  Progress: {i}/{len(dates)} ({ok} ok, {errors} errors)")
+        logger.info(f"  Progress: {i}/{len(dates)} ({ok} ok, {errors} errors) | {format_eta(t0, i, len(dates))}")
 
     static_ds.close()
 
