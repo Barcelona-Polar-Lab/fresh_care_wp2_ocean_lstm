@@ -461,7 +461,10 @@ def get_target_dates(cfg):
 
     For ``glorys_mode == 'monthly'``, one date per month (the 15th at 12:00).
     For ``glorys_mode == 'daily'``, dates are spaced by
-    ``reconstruction_interval_days`` (default 1 = every day).
+    ``reconstruction_interval_days`` (default 1 = every day) **within each
+    month**: the day-of-month always lies in {1, 1+interval, 1+2*interval, …}
+    capped at the month length. For interval=3 this gives days
+    {1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31} every month.
     For ``glorys_mode == 'auto'``, the mode is resolved by
     ``resolve_glorys_mode()`` before this function is called.
 
@@ -486,13 +489,19 @@ def get_target_dates(cfg):
             else:
                 current = datetime(current.year, current.month + 1, 1)
     elif mode == 'daily':
-        first_day = datetime(start.year, start.month, 1, 12, 0, 0)
-        last_day_month = calendar.monthrange(end.year, end.month)[1]
-        last_day = datetime(end.year, end.month, last_day_month, 12, 0, 0)
-        current = first_day
-        while current <= last_day:
-            dates.append(current)
-            current += timedelta(days=interval)
+        # Walk month-by-month so the day-of-month pattern restarts each month.
+        cur_y, cur_m = start.year, start.month
+        end_y, end_m = end.year, end.month
+        while (cur_y, cur_m) <= (end_y, end_m):
+            n_days = calendar.monthrange(cur_y, cur_m)[1]
+            day = 1
+            while day <= n_days:
+                dates.append(datetime(cur_y, cur_m, day, 12, 0, 0))
+                day += interval
+            if cur_m == 12:
+                cur_y, cur_m = cur_y + 1, 1
+            else:
+                cur_m += 1
     else:
         raise ValueError(f"glorys_mode must be 'monthly' or 'daily', got '{mode}'")
 
