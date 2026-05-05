@@ -170,7 +170,7 @@ def main():
         if status == 'ok':
             n_ok += 1
             if i % 50 == 0 or i == len(dates):
-                logger.info(f"  [{i}/{len(dates)}] processed (ok={n_ok}, skip={n_skip}, err={n_err}) | {format_eta(t0, i, len(dates))}")
+                logger.info(f"  [{i}/{len(dates)}] processed (ok={n_ok}, skip={n_skip}, err={n_err}) | {format_eta(t0, i, len(dates), skipped=n_skip)}")
         elif status == 'skip':
             n_skip += 1
         else:

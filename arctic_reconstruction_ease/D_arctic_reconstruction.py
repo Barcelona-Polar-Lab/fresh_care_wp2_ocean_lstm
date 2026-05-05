@@ -367,13 +367,16 @@ def main():
     dates = get_target_dates(cfg)
     logger.info(f"\nProcessing {len(dates)} target dates\n")
 
-    ok = errors = 0
+    ok = errors = skipped = 0
     failed_dates = []
     n_dates = len(dates)
     import time as _time
     t0 = _time.monotonic()
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{n_dates}: {dt:%Y-%m-%d} ---")
+        # Pre-check skip so the ETA can exclude instant no-ops from the rate
+        out_file = get_anomalies_file(cfg, dt)
+        will_skip = out_file.exists() and not overwrite
         result = reconstruct_single_date(
             dt, cfg, model, norm_params,
             static_ds, x_ease, y_ease, gm_attrs,
@@ -384,7 +387,9 @@ def main():
             failed_dates.append(dt)
         else:
             ok += 1
-        logger.info(f"  Progress: {i}/{n_dates} ({ok} ok, {errors} errors) | {format_eta(t0, i, n_dates)}")
+            if will_skip:
+                skipped += 1
+        logger.info(f"  Progress: {i}/{n_dates} ({ok} ok, {errors} errors) | {format_eta(t0, i, n_dates, skipped=skipped)}")
 
     static_ds.close()
 

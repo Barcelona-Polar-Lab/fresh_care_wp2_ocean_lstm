@@ -426,7 +426,7 @@ def process_directory(input_dir, output_dir, dataset_name,
 
         if i % 100 == 0 or i == total:
             logger.info(f"  {dataset_name}: {i}/{total} "
-                        f"({processed} new, {reused} reused) | {format_eta(t0, i, total)}")
+                        f"({processed} new, {reused} reused) | {format_eta(t0, i, total, skipped=reused)}")
 
     logger.info(f"  {dataset_name} done: {processed} processed, "
                 f"{reused} existing, {errors} errors")

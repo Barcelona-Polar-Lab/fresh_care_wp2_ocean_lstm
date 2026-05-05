@@ -793,7 +793,7 @@ def atomic_to_netcdf(ds, out_path, encoding=None, **kwargs):
     return out_path
 
 
-def format_eta(start_time, done, total):
+def format_eta(start_time, done, total, skipped=0):
     """Return a compact progress string with elapsed / rate / ETA.
 
     Example output::
@@ -802,10 +802,17 @@ def format_eta(start_time, done, total):
     *start_time* is a ``time.monotonic()`` value captured at loop start.
     *done* is the count of items completed so far (including skipped),
     *total* is the total number of items planned.
+    *skipped* is the number of items that were skipped instantly (e.g.
+    because their output already existed). Skips are excluded from the
+    rate so the ETA reflects the actual processing speed; this matters a
+    lot when resuming a run that has many pre-existing outputs.
     """
     import time as _time
     elapsed = max(_time.monotonic() - start_time, 1e-6)
-    rate = done / elapsed  # items per second
+    real_done = done - skipped
+    if real_done <= 0:
+        return f"elapsed={_fmt_dur(elapsed)} (skipping existing)"
+    rate = real_done / elapsed  # real items per second (skips ~free)
     if rate <= 0 or done >= total:
         return f"elapsed={_fmt_dur(elapsed)}"
     remaining = (total - done) / rate

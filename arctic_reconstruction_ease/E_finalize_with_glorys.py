@@ -297,12 +297,14 @@ def main():
     logger.info(f"  Dates: {len(dates)}  ({'overwrite' if overwrite else 'skip-existing'})")
     logger.info("=" * 60)
 
-    ok = errors = 0
+    ok = errors = skipped = 0
     failed_dates = []
     import time as _time
     t0 = _time.monotonic()
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{len(dates)}: {dt:%Y-%m-%d} ---")
+        # Pre-check skip so the ETA can exclude instant no-ops from the rate
+        will_skip = (out_dir / f"reconstruction_{dt:%Y%m%d}.nc").exists() and not overwrite
         result = finalize_single_date(
             dt, cfg, static_ds, x_ease, y_ease, gm_attrs,
             sat_dirs, tf_from, bbox, out_dir, overwrite=overwrite,
@@ -312,7 +314,9 @@ def main():
             failed_dates.append(dt)
         else:
             ok += 1
-        logger.info(f"  Progress: {i}/{len(dates)} ({ok} ok, {errors} errors) | {format_eta(t0, i, len(dates))}")
+            if will_skip:
+                skipped += 1
+        logger.info(f"  Progress: {i}/{len(dates)} ({ok} ok, {errors} errors) | {format_eta(t0, i, len(dates), skipped=skipped)}")
 
     static_ds.close()
 
