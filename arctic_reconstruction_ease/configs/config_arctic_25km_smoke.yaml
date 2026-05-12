@@ -40,14 +40,14 @@ paths:
 
   model_path: "trained_models/wg_daily_strat_real_only_mcdo_val/AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth"
 
-  output_dir: "/home/nicolas/SACO/FRESH-CARE/Data_lstm_reconstruction/arctic_25km_smoke"
+  output_dir: "/home/nicolas/SACO/FRESH-CARE/Data_lstm_reconstruction/arctic_25km_smoke_test"
 
 processing:
   glorys_mode: "daily"
   n_mc_samples: 500
   chunk_size: 5000
   time_window_days: 16
-  reconstruction_interval_days: 31   # only the 1st of the month is processed
+  reconstruction_interval_days: 3   # 3-day stride to match production config
 
 depth_levels: "woa_standard"
 
