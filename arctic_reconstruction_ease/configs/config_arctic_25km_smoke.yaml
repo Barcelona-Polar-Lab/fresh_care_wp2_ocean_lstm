@@ -48,6 +48,7 @@ processing:
   chunk_size: 5000
   time_window_days: 16
   reconstruction_interval_days: 3   # 3-day stride to match production config
+  geos_coast_buffer_cells: 2
 
 depth_levels: "woa_standard"
 
