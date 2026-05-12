@@ -155,6 +155,7 @@ def load_config(yaml_path):
     proc.setdefault('chunk_size', 5000)
     proc.setdefault('time_window_days', 16)
     proc.setdefault('reconstruction_interval_days', 1)
+    proc.setdefault('geos_coast_buffer_cells', 0)
 
     # --- metadata defaults (used for tidy CF-compliant global attrs) ---
     cfg.setdefault('metadata', {})

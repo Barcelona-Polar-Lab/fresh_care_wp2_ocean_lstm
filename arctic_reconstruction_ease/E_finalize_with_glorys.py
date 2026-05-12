@@ -59,6 +59,7 @@ from config_utils import (
     resolve_glorys_mode,
 )
 from glorys_regrid import regrid_glorys_single_timestep
+from geos_currents import compute_geostrophic_currents
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,8 +132,17 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     SST = SST - 273.15
     DOY = target_date.timetuple().tm_yday
 
-    # --- Build output dataset (schema MUST match legacy Step D output) ---
+    # --- Geostrophic currents from reconstructed T/S + satellite ADT ---
+    logger.info(f"  [{date_str}] Computing geostrophic currents")
     depth = get_woa_target_depths()
+    lat2d = static_ds['latitude'].values
+    lon2d = static_ds['longitude'].values
+    ADH, vel_gos_x, vel_gos_y, u_gos, v_gos = compute_geostrophic_currents(
+        T_recon, S_recon, ADT, depth, lat2d, lon2d, x_ease, y_ease,
+        coast_buffer_cells=cfg['processing'].get('geos_coast_buffer_cells', 0),
+    )
+
+    # --- Build output dataset (schema MUST match legacy Step D output) ---
     time_val = np.datetime64(target_date.strftime('%Y-%m-%dT%H:%M:%S'))
 
     coords = {
@@ -213,6 +223,21 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     ds_out['ADT'] = _da2d(ADT,
         'Absolute dynamic topography (satellite L4)', 'm',
         standard_name='sea_surface_height_above_geoid')
+
+    # Geostrophic currents (derived from T_recon, S_recon, ADT)
+    ds_out['ADH'] = _da(ADH,
+        'Absolute dynamic height (ADT - steric height)', 'm',
+        standard_name='sea_water_absolute_dynamic_height')
+    ds_out['vel_gos_x'] = _da(vel_gos_x,
+        'Geostrophic velocity, EASE-grid x component', 'm s-1')
+    ds_out['vel_gos_y'] = _da(vel_gos_y,
+        'Geostrophic velocity, EASE-grid y component', 'm s-1')
+    ds_out['u_gos'] = _da(u_gos,
+        'Eastward geostrophic velocity', 'm s-1',
+        standard_name='eastward_sea_water_velocity')
+    ds_out['v_gos'] = _da(v_gos,
+        'Northward geostrophic velocity', 'm s-1',
+        standard_name='northward_sea_water_velocity')
 
     # DOY
     ds_out['DOY'] = xr.DataArray([DOY], dims=['time'],
