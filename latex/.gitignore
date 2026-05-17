@@ -1,0 +1,20 @@
+# LaTeX auxiliary files
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.bbl
+*.blg
+*.lof
+*.lot
+
+# Build directory (latexmk -output-directory=build)
+build/
+
+# Compiled PDFs (final PDFs are copied to the plots dir by compile_all.sh)
+*.pdf
