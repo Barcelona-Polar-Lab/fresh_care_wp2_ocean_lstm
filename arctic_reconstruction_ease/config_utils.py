@@ -228,6 +228,20 @@ def build_global_attrs(cfg, title, source, extra=None):
         'grid_size': f"{grid['n_cells_x']} x {grid['n_cells_y']}",
         'grid_label': label,
     }
+
+    # Optional lat/lon subdomain bounds (CF/ACDD geospatial_* attrs).
+    # When the YAML defines any of grid.lat_min/lat_max/lon_min/lon_max,
+    # propagate them to every phase's output so the final reconstruction
+    # file machine-readably advertises the clipped domain.
+    for key_yaml, key_attr in (
+        ('lat_min', 'geospatial_lat_min'),
+        ('lat_max', 'geospatial_lat_max'),
+        ('lon_min', 'geospatial_lon_min'),
+        ('lon_max', 'geospatial_lon_max'),
+    ):
+        if grid.get(key_yaml) is not None:
+            attrs[key_attr] = float(grid[key_yaml])
+
     if extra:
         attrs.update(extra)
 
@@ -426,6 +440,184 @@ def subset_latlon_data(lat, lon, data, bbox):
         data_sub = data  # fallback — no subsetting
 
     return lat_sub, lon_sub, data_sub
+
+
+# ============================================================================
+# LAT/LON SUBDOMAIN MASKING (pre- and post-clip primitives)
+# ============================================================================
+# Used at Phase A to AND an optional lat/lon bounding box into ocean_mask,
+# so all downstream phases (which filter by ``ocean_mask == 1``) naturally
+# restrict to the configured subdomain. Also exposes the lower-level slice
+# + clip helpers for future a-posteriori clipping needs.
+
+# Latitude tolerance for non-strict inequalities (lat_min etc.) — 1e-5 deg
+# (~1 mm at the equator, ~mm-level near the pole) is well below any
+# meaningful precision.
+_LATLON_ATOL_DEG = 1e-5
+
+# Coordinate tolerance for matching slice coordinates against freshly-built
+# target coordinates (EASE coords are integer-meter; 1e-5 m == 1e-8 km is
+# well below precision and rules out off-by-one slicing).
+_COORD_ATOL_M = 1e-5
+
+# Variables that are pure geometry / metadata — we slice them spatially
+# (if they have x_ease/y_ease dims) but do NOT apply the latlon mask to
+# them. Bathymetry and lat/lon grids are valid everywhere on the grid.
+_GEOMETRY_VARS = {'latitude', 'longitude', 'elevation', 'ease_grid_mapping'}
+
+
+def compute_latlon_mask(lat2d, lon2d, cfg):
+    """Build a 2-D boolean keep-mask from ``cfg['grid']`` lat/lon bounds.
+
+    Non-strict inequalities (``>=`` / ``<=``) with a small tolerance so
+    that a boundary value of e.g. ``lat_min: 60`` keeps cells at
+    lat ≈ 59.99999. Returns ``None`` if no bound is set, in which case
+    callers should treat that as "no clipping requested" and skip the
+    masking step entirely.
+
+    Recognised keys under ``cfg['grid']``: ``lat_min``, ``lat_max``,
+    ``lon_min``, ``lon_max`` (any subset; missing = unbounded on that
+    side).
+    """
+    grid = cfg.get('grid', {})
+    lat_min = grid.get('lat_min')
+    lat_max = grid.get('lat_max')
+    lon_min = grid.get('lon_min')
+    lon_max = grid.get('lon_max')
+    if all(v is None for v in (lat_min, lat_max, lon_min, lon_max)):
+        return None
+
+    mask = np.ones(lat2d.shape, dtype=bool)
+    if lat_min is not None:
+        mask &= lat2d >= (lat_min - _LATLON_ATOL_DEG)
+    if lat_max is not None:
+        mask &= lat2d <= (lat_max + _LATLON_ATOL_DEG)
+    if lon_min is not None:
+        mask &= lon2d >= (lon_min - _LATLON_ATOL_DEG)
+    if lon_max is not None:
+        mask &= lon2d <= (lon_max + _LATLON_ATOL_DEG)
+    return mask
+
+
+def compute_subgrid_slice(x_src, y_src, x_tgt, y_tgt):
+    """Return ``(slice_y, slice_x)`` such that ``x_src[slice_x] == x_tgt``.
+
+    Requires a symmetric central placement (which is the case when both
+    grids share the same ``center_x_m/center_y_m`` and resolution).
+    Raises ``ValueError`` if no exact match can be made within
+    ``_COORD_ATOL_M`` meters.
+
+    Used for a-posteriori clipping of pipeline outputs to a smaller
+    rectangular target grid.
+    """
+    def _one(src, tgt, name):
+        if len(tgt) > len(src):
+            raise ValueError(f"{name}: target ({len(tgt)}) is larger than "
+                             f"source ({len(src)}) — cannot clip.")
+        n_drop = len(src) - len(tgt)
+        if n_drop % 2 != 0:
+            raise ValueError(f"{name}: asymmetric drop ({n_drop}) — source "
+                             "and target grids do not share the same center.")
+        i0 = n_drop // 2
+        i1 = i0 + len(tgt)
+        sub = src[i0:i1]
+        if not np.allclose(sub, tgt, atol=_COORD_ATOL_M, rtol=0):
+            raise ValueError(f"{name}: central slice does not match target "
+                             f"(max diff {np.max(np.abs(sub - tgt))} m).")
+        return slice(i0, i1)
+
+    return _one(y_src, y_tgt, 'y_ease'), _one(x_src, x_tgt, 'x_ease')
+
+
+def _apply_mask_to_var(da, mask2d, var_name):
+    """Apply a 2-D ``mask2d`` (True = keep) to a DataArray with x/y dims.
+
+    - ``ocean_mask`` (uint8): set masked cells to 0.
+    - Float dtypes: set masked cells to NaN (broadcasted across leading
+      dims).
+    - Other integer dtypes (e.g. flag vars we don't ship): leave alone.
+    - Geometry vars (lat/lon/elevation/grid_mapping): leave alone.
+    """
+    if var_name in _GEOMETRY_VARS:
+        return da
+    if var_name == 'ocean_mask':
+        new = da.values.copy()
+        new[~mask2d] = 0
+        return xr.DataArray(new, dims=da.dims, coords=da.coords,
+                            attrs=da.attrs)
+    if np.issubdtype(da.dtype, np.floating):
+        new = da.values.copy()
+        # Broadcast mask across any leading dims (time, depth, ...).
+        new[..., ~mask2d] = np.nan
+        return xr.DataArray(new, dims=da.dims, coords=da.coords,
+                            attrs=da.attrs)
+    return da
+
+
+def _is_spatial(da):
+    return ('x_ease' in da.dims) and ('y_ease' in da.dims)
+
+
+def clip_dataset(ds, slice_y, slice_x, mask2d,
+                 attrs_extra=None, cfg=None):
+    """Slice + (optionally) mask a single dataset.
+
+    - Spatial vars (with both x_ease and y_ease): subset with isel,
+      then apply ``mask2d`` (NaN for floats, AND for ocean_mask).
+    - Non-spatial vars / coords (time, depth, ease_grid_mapping, DOY):
+      pass through unchanged.
+    - Global attrs: preserved; ``attrs_extra`` merged on top.
+    - If ``cfg`` is provided and bounds are set, ``geospatial_lat_min``
+      / ``lat_max`` / ``lon_min`` / ``lon_max`` global attrs are added.
+    """
+    ds_sub = ds.isel(y_ease=slice_y, x_ease=slice_x)
+
+    if mask2d is not None:
+        new_vars = {}
+        for v in ds_sub.data_vars:
+            da = ds_sub[v]
+            if _is_spatial(da):
+                new_vars[v] = _apply_mask_to_var(da, mask2d, v)
+            else:
+                new_vars[v] = da
+        ds_sub = xr.Dataset(new_vars, coords=ds_sub.coords, attrs=ds_sub.attrs)
+
+    # Tag ocean_mask attrs so a downstream reader knows it now reflects
+    # both the shapefile ocean mask AND the lat/lon domain bounds.
+    if mask2d is not None and 'ocean_mask' in ds_sub.data_vars:
+        oa = dict(ds_sub['ocean_mask'].attrs)
+        comment = oa.get('comment', '')
+        tag = ('Restricted to the configured lat/lon domain '
+               '(grid.lat_min/lat_max/lon_min/lon_max in YAML).')
+        if tag not in comment:
+            oa['comment'] = (comment + ' ' if comment else '') + tag
+        ds_sub['ocean_mask'] = ds_sub['ocean_mask'].assign_attrs(oa)
+
+    # Global attrs: copy + refresh geometry attrs from the actual sliced
+    # shape (otherwise ``grid_size`` etc. would still reflect the source
+    # grid) + add geospatial bounds.
+    new_attrs = dict(ds.attrs)
+    ny_new = ds_sub.sizes.get('y_ease')
+    nx_new = ds_sub.sizes.get('x_ease')
+    if nx_new is not None and ny_new is not None:
+        # Only overwrite if the attr was already present.
+        if 'grid_size' in new_attrs:
+            new_attrs['grid_size'] = f'{nx_new} x {ny_new}'
+    if cfg is not None:
+        grid = cfg.get('grid', {})
+        for key_yaml, key_attr in (
+            ('lat_min', 'geospatial_lat_min'),
+            ('lat_max', 'geospatial_lat_max'),
+            ('lon_min', 'geospatial_lon_min'),
+            ('lon_max', 'geospatial_lon_max'),
+        ):
+            if grid.get(key_yaml) is not None:
+                new_attrs[key_attr] = float(grid[key_yaml])
+    if attrs_extra:
+        new_attrs.update(attrs_extra)
+    ds_sub.attrs = new_attrs
+
+    return ds_sub
 
 
 # ============================================================================

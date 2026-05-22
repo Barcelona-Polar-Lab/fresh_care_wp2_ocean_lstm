@@ -30,6 +30,7 @@ from config_utils import (
     get_resolution_label,
     get_static_data_path,
     compute_latlon_grids,
+    compute_latlon_mask,
     get_ease_latlon_bbox,
     load_pipeline_plan,
     build_global_attrs,
@@ -226,6 +227,20 @@ def create_static_dataset(cfg):
         shp_path, transform, (n_y, n_x), x_ease, y_ease, proj4
     )
 
+    # 3b. Optional lat/lon subdomain mask. When the YAML defines
+    # ``grid.lat_min/lat_max/lon_min/lon_max``, AND it into ocean_mask so
+    # all downstream phases (which filter by ocean_mask == 1) naturally
+    # restrict to the configured subdomain — no other phase edits needed.
+    latlon_keep = compute_latlon_mask(lat_2d, lon_2d, cfg)
+    if latlon_keep is not None:
+        n_before = int((ocean_mask == 1).sum())
+        ocean_mask = np.where(latlon_keep, ocean_mask, 0).astype(np.uint8)
+        n_after = int((ocean_mask == 1).sum())
+        n_keep = int(latlon_keep.sum())
+        tot = latlon_keep.size
+        print(f"Lat/lon subdomain mask applied: keep {n_keep}/{tot} cells "
+              f"({100.0*n_keep/tot:.1f}%); ocean pixels {n_before} → {n_after}")
+
     # 4. Bathymetry (GEBCO 1 km → target resolution)
     gebco_path = cfg['paths']['gebco_1km_file']
     elevation = interpolate_gebco(gebco_path, x_ease, y_ease)
@@ -239,6 +254,9 @@ def create_static_dataset(cfg):
                 'flag_values': np.array([0, 1], dtype=np.uint8),
                 'flag_meanings': 'land ocean',
                 'grid_mapping': 'ease_grid_mapping',
+                **({'comment': 'Restricted to the configured lat/lon domain '
+                              '(grid.lat_min/lat_max/lon_min/lon_max in YAML).'}
+                   if latlon_keep is not None else {}),
             }),
             'elevation': (['y_ease', 'x_ease'], elevation, {
                 'standard_name': 'height_above_mean_sea_level',
@@ -280,7 +298,8 @@ def create_static_dataset(cfg):
     # Grid mapping variable
     ds['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
-    # Global attributes (CF-1.8 + ACDD-1.3)
+    # Global attributes (CF-1.8 + ACDD-1.3). Geospatial lat/lon bounds
+    # (when configured) are added automatically by build_global_attrs.
     ds.attrs.update(build_global_attrs(
         cfg,
         title=f'Static EASE grid data ({label}): ocean mask and bathymetry',
