@@ -1,0 +1,64 @@
+# =============================================================================
+# Arctic Reconstruction Pipeline — Fram Strait, 3.125 km
+# =============================================================================
+# 320 × 144 cells × 3.125 km, centered at (-50000, -1200000) in EASE meters.
+# =============================================================================
+
+grid:
+  resolution_km: 3.125
+  center_x_m: -50000
+  center_y_m: -1200000
+  width_km: 1000      # 320 cells × 3.125 km
+  height_km: 450      # 144 cells × 3.125 km
+
+projection:
+  lat_0: 90
+  lon_0: 0
+  false_easting: 0
+  false_northing: 0
+
+time:
+  start_month: "2011-01"
+  end_month: "2021-12"
+
+training_period:
+  start_month: "2011-01"
+  end_month: "2021-12"
+
+paths:
+  glorys_monthly_dir: "/media/nicolas/DATOS/Reanalysis/GLORYS_monthly_2010_2022/data"
+  glorys_daily_dir:   "/media/nicolas/DATOS/Reanalysis/GLORYS_daily_arctic_ST_2010_2024"
+
+  sst_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/SST/data"
+  sss_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/SSS/sss_cci_v55/non_regridded_filled_wg"
+  adt_raw_dir: "/home/nicolas/SACO/FRESH-CARE/Data_satellite/AVISO/non_regridded_north_pole_1px"
+
+  gebco_1km_file:           "/home/nicolas/SACO/FRESH-CARE/Data_bathymetry/GEBCO_Sep_2025/data_EASE/gebco_ease_grid_1km.nc"
+  natural_earth_shapefile:  "/home/nicolas/SACO/FRESH-CARE/Arctic_masks/natural_earth_data/ne_10m_ocean/ne_10m_ocean.shp"
+
+  model_path: "/home/nicolas/SACO/FRESH-CARE/Codes/WP2/buongiorno_to_pytorch_padding/AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth"
+
+  output_dir: "/home/nicolas/SACO/FRESH-CARE/Data_lstm_reconstruction/fram_3p125"
+
+host_overrides:
+  server:
+    output_dir: "/data/FRESH-CARE/data_for_LSTM/reconst_inputs/fram_3p125"
+    model_path: "/home/FRESH-CARE/Codes/WP2_lstm/arctic_reconstruction_ease/trained_model/model.pth"
+
+processing:
+  glorys_mode: "daily"
+  reconstruction_interval_days: 3
+  n_mc_samples: 500
+  chunk_size: 5000
+  time_window_days: 16
+
+depth_levels: "woa_standard"
+
+metadata:
+  institution: "Institut de Ciències del Mar (ICM-CSIC)"
+  authors:     "Nicolas Werner-Pelletier, Aleida Rosquete, Maria Sánchez-Urrea, Julia Crespin, Nina Hoareau, Mario Martin, Marta Umbert"
+  contact:     "nicolaswerner@icm.csic.es"
+  project:     "FRESH-CARE (ERC Starting Grant)"
+  version:     "1.0"
+  region:      "Fram Strait"
+  comment:     "3-D temperature/salinity reconstruction over the Fram Strait at 3.125 km EASE-2 resolution from satellite SST/SSS/ADT and GLORYS12 reanalysis, using an LSTM with Monte-Carlo Dropout."

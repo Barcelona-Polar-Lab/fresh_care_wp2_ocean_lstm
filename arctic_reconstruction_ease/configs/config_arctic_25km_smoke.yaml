@@ -9,8 +9,9 @@ grid:
   resolution_km: 25
   center_x_m: 0
   center_y_m: 0
-  width_km: 8750
-  height_km: 8750
+  width_km: 7000     # 280 cells × 25 km
+  height_km: 7000    # 280 cells × 25 km
+  lat_min: 60
 
 projection:
   lat_0: 90
@@ -48,7 +49,7 @@ processing:
   chunk_size: 5000
   time_window_days: 16
   reconstruction_interval_days: 3   # 3-day stride to match production config
-  geos_coast_buffer_cells: 2
+  geos_coast_buffer_cells: 3
 
 depth_levels: "woa_standard"
 
@@ -59,4 +60,4 @@ metadata:
   project:     "FRESH-CARE (ERC Starting Grant)"
   version:     "1.0-smoke"
   region:      "Pan-Arctic (≥ ~60°N)"
-  comment:     "Smoke test — single date, used to measure per-file output size at 25 km."
+  comment:     "Smoke test — single date, used to measure per-file output size at 25 km; restricted to the Arctic domain (lat >= 60 deg N)."

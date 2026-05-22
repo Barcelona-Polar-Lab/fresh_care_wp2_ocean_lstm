@@ -15,8 +15,13 @@ grid:
   resolution_km: 25
   center_x_m: 0
   center_y_m: 0
-  width_km: 8750     # 350 cells × 25 km
-  height_km: 8750    # 350 cells × 25 km
+  width_km: 7000     # 280 cells × 25 km
+  height_km: 7000    # 280 cells × 25 km
+  # Optional non-strict lat/lon bounding box (>=, <=). Cells outside are
+  # masked: float vars set to NaN, ocean_mask AND-ed to 0.
+  # examples: lon_min: -180, lon_max: 180, lat_min: 60, lat_max: 90
+  # when non specified, takes the full extent
+  lat_min: 60
 
 # ---------------------------------------------------------------------------
 # Projection (Lambert Azimuthal Equal Area, North Pole)
@@ -97,4 +102,4 @@ metadata:
   project:     "FRESH-CARE (ERC Starting Grant)"
   version:     "1.0"
   region:      "Pan-Arctic (≥ ~60°N)"
-  comment:     "Pan-Arctic 3-D temperature/salinity reconstruction at 25 km EASE-2 resolution from satellite SST/SSS/ADT and GLORYS12 reanalysis, using an LSTM with Monte-Carlo Dropout."
+  comment:     "Pan-Arctic 3-D temperature/salinity reconstruction at 25 km EASE-2 resolution from satellite SST/SSS/ADT and GLORYS12 reanalysis, using an LSTM with Monte-Carlo Dropout; restricted to the Arctic domain (lat >= 60 deg N)."

@@ -748,6 +748,10 @@ def build_var_encoding(ds, chunk_t=1, chunk_d=17, chunk_xy=50):
             encoding[v] = {'zlib': False}
             continue
 
+        # Clamp chunk sizes to the actual dimension sizes — netCDF4 rejects
+        # chunks larger than the dim (e.g. small regional grids like 56×32).
+        chunks = tuple(min(c, s) for c, s in zip(chunks, da.shape))
+
         base = {'zlib': True, 'complevel': 4, 'shuffle': True,
                 'chunksizes': chunks}
 
