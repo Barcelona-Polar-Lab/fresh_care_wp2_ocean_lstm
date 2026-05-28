@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 
 # Make pipeline modules importable
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE / "arctic_reconstruction_ease"))
+sys.path.insert(0, str(HERE))
 
 from config_utils import (  # type: ignore[import-not-found]
     load_config, load_satellite_for_time,
@@ -32,7 +32,7 @@ from config_utils import (  # type: ignore[import-not-found]
 
 # --- user-chosen date and config ---
 TARGET   = datetime(2011, 1, 3)
-CFG_PATH = HERE / "arctic_reconstruction_ease" / "configs" / "config_arctic_25km.yaml"
+CFG_PATH = HERE / "configs" / "config_arctic_25km.yaml"
 PLOT_DIR = HERE / "plots"
 
 # ---------------------------------------------------------------------------
