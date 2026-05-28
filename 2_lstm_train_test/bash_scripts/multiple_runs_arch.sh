@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Architecture search script - testing different LSTM layer configurations
 # Hyperparameters remain at default values from Config class
 

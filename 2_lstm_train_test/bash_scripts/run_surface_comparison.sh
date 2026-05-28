@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Script to compare model performance using satellite vs GLORYS surface data
 # Runs the LSTM model with both surface data sources
 

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Architecture search script for Temperature + Salinity only (no Steric Height)
 # Uses --output_vars 110 to disable steric_height output
 # Models saved under trained_models/models_TS_arch_search/

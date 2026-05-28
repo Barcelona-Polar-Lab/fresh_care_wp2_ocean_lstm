@@ -51,9 +51,9 @@ class Config:
     """Configuration class for easy parameter adjustment"""
     
     # Local file paths
-    #TRAIN_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_train63.nc'
-    #DEV_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_dev21.nc'
-    #TEST_FILE = 'data_for_lstm/var_depths_data_for_LSTM_C_wg_test16.nc'
+    #TRAIN_FILE = '../data_for_lstm/var_depths_data_for_LSTM_C_wg_train63.nc'
+    #DEV_FILE = '../data_for_lstm/var_depths_data_for_LSTM_C_wg_dev21.nc'
+    #TEST_FILE = '../data_for_lstm/var_depths_data_for_LSTM_C_wg_test16.nc'
 
     # Remote file paths (bec112 server)
     TRAIN_FILE = '/data/FRESH-CARE/data_for_LSTM/data/var_depths_data_for_LSTM_C_wg_train63.nc'

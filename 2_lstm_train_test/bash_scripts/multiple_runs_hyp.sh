@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Define hyperparameter combinations: [batch_size, dropout_rate, learning_rate]
 hyperparams=(
     # Batch size = 8

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Script to extract and display RMSE values from all LSTM model directories
 
 # Set numeric locale to C to ensure decimal point formatting

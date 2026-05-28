@@ -378,7 +378,7 @@ def plot_convergence(mc_values, all_stds, output_path, output_names=None, n_prof
 def main():
     parser = argparse.ArgumentParser(description='MC Dropout Convergence Analysis (Standalone)')
     parser.add_argument('--test_file', type=str, 
-                       default='data_for_lstm/100_random_test_profiles.nc',
+                       default='../data_for_lstm/100_random_test_profiles.nc',
                        help='Path to small test dataset')
     parser.add_argument('--model_path', type=str,
                        default='trained_models/wg_daily/aa_best_model_LSTM_46_bs16_lr2e-4_pat5_do0.2/model.pth',

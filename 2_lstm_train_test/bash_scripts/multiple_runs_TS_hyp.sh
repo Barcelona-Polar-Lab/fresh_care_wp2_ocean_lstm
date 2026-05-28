@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Run from the parent directory (2_lstm_train_test/) so relative paths resolve.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+
 # Hyperparameter search for T+S LSTM (architecture: 52 46)
 # Updated for:
 #   - GLORYS-daily baseline
