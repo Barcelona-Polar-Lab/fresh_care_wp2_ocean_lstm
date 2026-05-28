@@ -73,7 +73,7 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
                          gm_attrs, sat_dirs, tf_from, bbox,
                          out_dir, overwrite=False):
     date_str = target_date.strftime('%Y%m%d')
-    out_file = out_dir / f"reconstruction_{date_str}.nc"
+    out_file = out_dir / f"TS_currents_lstm_{date_str}.nc"
     if out_file.exists() and not overwrite:
         logger.info(f"  {out_file.name} exists — skipping")
         return out_file
@@ -329,7 +329,7 @@ def main():
     for i, dt in enumerate(dates, 1):
         logger.info(f"\n--- Date {i}/{len(dates)}: {dt:%Y-%m-%d} ---")
         # Pre-check skip so the ETA can exclude instant no-ops from the rate
-        will_skip = (out_dir / f"reconstruction_{dt:%Y%m%d}.nc").exists() and not overwrite
+        will_skip = (out_dir / f"TS_currents_lstm_{dt:%Y%m%d}.nc").exists() and not overwrite
         result = finalize_single_date(
             dt, cfg, static_ds, x_ease, y_ease, gm_attrs,
             sat_dirs, tf_from, bbox, out_dir, overwrite=overwrite,

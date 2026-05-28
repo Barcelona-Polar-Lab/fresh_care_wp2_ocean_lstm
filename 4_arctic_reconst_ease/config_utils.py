@@ -880,7 +880,7 @@ def get_intermediate_dir(cfg):
 
 def get_reconstruction_dir(cfg):
     """Return the directory for final reconstruction NetCDF files."""
-    return Path(cfg['paths']['output_dir']) / 'final_TS_reconstruction'
+    return Path(cfg['paths']['output_dir']) / 'TS_currents_lstm'
 
 
 def get_glorys_surface_dir(cfg):
