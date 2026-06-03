@@ -432,6 +432,8 @@ def process_period(kind: str, key: tuple, dates: list[date],
     # Iterate files (one day at a time → minimal RAM)
     coord_template = None
     src_global_attrs = None
+    time_attrs_src: dict = {}
+    time_encoding_src: dict = {}
     static_arrays: dict[str, xr.DataArray] = {}
     time_start = min(dates)
     time_end = max(dates)
@@ -449,6 +451,9 @@ def process_period(kind: str, key: tuple, dates: list[date],
                     "x_ease": ds["x_ease"],
                 }
                 src_global_attrs = dict(ds.attrs)
+                if "time" in ds.coords or "time" in ds.variables:
+                    time_attrs_src = dict(ds["time"].attrs)
+                    time_encoding_src = dict(ds["time"].encoding)
                 for sv in STATIC_VARS:
                     if sv in ds:
                         static_arrays[sv] = ds[sv].load()
@@ -553,6 +558,24 @@ def process_period(kind: str, key: tuple, dates: list[date],
             attrs={"long_name": "Number of valid daily samples per cell",
                    "units": "1"})
 
+    # ---- Add a singleton time coord (period midpoint) so the output files
+    # can be concatenated with xr.open_mfdataset(..., combine='by_coords') or
+    # combine='nested', concat_dim='time'. We preserve the source time units
+    # and calendar encoding verbatim (read from the first per-date file).
+    np_start = np.datetime64(p_start)
+    np_end = np.datetime64(p_end)
+    time_mid = np_start + (np_end - np_start) // 2
+    default_time_attrs = {"standard_name": "time", "long_name": "Time",
+                          "axis": "T"}
+    time_attrs = time_attrs_src if time_attrs_src else default_time_attrs
+    ds_out = ds_out.assign_coords(
+        time=xr.DataArray([time_mid], dims=["time"], attrs=time_attrs))
+    # Expand only the time-varying fields with the new dim (statics stay 2-D)
+    for vname in list(ds_out.data_vars):
+        if vname in STATIC_VARS:
+            continue
+        ds_out[vname] = ds_out[vname].expand_dims(time=ds_out["time"])
+
     # Global attributes: preserve source, override title and add period info
     g = dict(src_global_attrs) if src_global_attrs else {}
     g.pop("reconstruction_date", None)
@@ -593,6 +616,15 @@ def process_period(kind: str, key: tuple, dates: list[date],
                                "_FillValue": np.float32(np.nan)}
         elif np.issubdtype(da.dtype, np.integer):
             encoding[vname] = {"zlib": True, "complevel": 4}
+
+    # Preserve source time units/calendar/dtype so open_mfdataset round-trips
+    # cleanly across files written by both this script and Step E.
+    if time_encoding_src:
+        te = {k: time_encoding_src[k]
+              for k in ("units", "calendar", "dtype")
+              if k in time_encoding_src and time_encoding_src[k] is not None}
+        if te:
+            encoding["time"] = te
 
     out_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
