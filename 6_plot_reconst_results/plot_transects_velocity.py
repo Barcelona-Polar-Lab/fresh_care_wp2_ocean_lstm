@@ -76,9 +76,37 @@ CBAR_TICKS_STD = {
     "barents_6p25": [0.00, 0.03, 0.06, 0.09, 0.12, 0.15],
 }
 
+# Mean panel field per config: "intensity" (default) | "u" | "v".
+MEAN_FIELD = {
+    "fram_6p25":    "v",
+    "barents_6p25": "u",
+}
+
+# Colour ranges for u / v components (diverging, symmetric around 0).
+PANEL_LIMITS_UV = {
+    "fram_6p25":    {"u": (-0.10, 0.10), "v": (-0.10, 0.10)},
+    "barents_6p25": {"u": (-0.07, 0.07), "v": (-0.07, 0.07)},
+}
+CBAR_TICKS_UV = {
+    "fram_6p25": {
+        "u": [-0.10, -0.05, 0.00, 0.05, 0.10],
+        "v": [-0.10, -0.05, 0.00, 0.05, 0.10],
+    },
+    "barents_6p25": {
+        "u": [-0.07, -0.035, 0.00, 0.035, 0.07],
+        "v": [-0.07, -0.035, 0.00, 0.035, 0.07],
+    },
+}
+
+#CMAP_UV = cmc.bam  # diverging colormap for signed velocity components
+#CMAP_UV = cmc.roma  # diverging colormap for signed velocity components
+#CMAP_UV = cmc.vik  # diverging colormap for signed velocity components
+CMAP_UV = cmc.cork  # diverging colormap for signed velocity components
+
+
 # Optional explicit x-axis ticks per config.
 XAXIS_TICKS = {
-    "barents_6p25": list(range(71, 78)),
+    "barents_6p25": list(range(71, 75)),
 }
 
 # Extra subsampling factor for in/out markers in the upper 100 m (per cfg).
@@ -142,7 +170,7 @@ def _normal_unit_vector(endpoints):
 
 
 def _draw_field(ax, template, field, endpoints, *,
-                cmap, vmin, vmax, max_depth):
+                cmap, vmin, vmax, max_depth, extend="max"):
     """Filled-contour a single (depth, transect) field. Returns mappable
     and (x_coords, depths, x_bathy, h_bathy, max_depth_local)."""
     y_idx, x_idx, x_coords, _ = _transect_indices(template, endpoints)
@@ -191,7 +219,7 @@ def _draw_field(ax, template, field, endpoints, *,
                                     np.nan, Vi[:, i])
             lvls = np.linspace(vmin, vmax, 20)
             pc = ax.contourf(Xi, Zi, Vi, levels=lvls, cmap=cmap,
-                             vmin=vmin, vmax=vmax, extend="max", zorder=-1)
+                             vmin=vmin, vmax=vmax, extend=extend, zorder=-1)
         except Exception as e:
             logger.info(f"  contour failed ({str(e).splitlines()[0]}); scatter")
             pc = ax.scatter(x_section, z_section, c=var_section, s=8,
@@ -280,10 +308,13 @@ def _direction_words(endpoints):
 # Build figure
 # ---------------------------------------------------------------------------
 
-def build_figure(out_path: Path, overwrite: bool):
+def build_figure(out_path: Path, overwrite: bool,
+                 depth_overrides: dict[str, int] | None = None):
     if out_path.exists() and not overwrite:
         logger.info(f"exists, skip ({out_path})")
         return
+    if depth_overrides is None:
+        depth_overrides = {}
 
     fig, axes = plt.subplots(len(ROWS), 2, figsize=(13, 9.5),
                              sharey="row")
@@ -298,7 +329,7 @@ def build_figure(out_path: Path, overwrite: bool):
     for ri, cfg in enumerate(ROWS):
         gateway_name, endpoints = GATEWAYS[cfg]
         limits = PLOT_LIMITS[cfg]
-        max_depth = limits["max_depth"]
+        max_depth = depth_overrides.get(cfg, limits["max_depth"])
         fpath = (BASE_DIR / cfg / "product_stats" / "full"
                  / "mean_2011_2021.nc")
         if not fpath.exists():
@@ -320,46 +351,73 @@ def build_figure(out_path: Path, overwrite: bool):
             f"[Lon, Lat] endpoints: [{p1[0]:.2f}°, {p1[1]:.2f}°], "
             f"[{p2[0]:.2f}°, {p2[1]:.2f}°]")
 
-        # ---- mean intensity panel ----
+        # ---- mean panel (field may be intensity, u, or v) ----
         ax_mean = axes[ri, 0]
-        vmin_m, vmax_m = PANEL_LIMITS[cfg]["mean"]
-        pc_m, geom = _draw_field(
-            ax_mean, template, intensity, endpoints,
-            cmap=CMAP_MEAN, vmin=vmin_m, vmax=vmax_m, max_depth=max_depth)
-        _overlay_direction_markers(
-            ax_mean, template, u, v, endpoints, geom,
-            shallow_stride=SHALLOW_STRIDE.get(cfg, 1))
+        mean_field_key = MEAN_FIELD.get(cfg, "intensity")
+        if mean_field_key == "u":
+            mean_data = u
+            vmin_m, vmax_m = PANEL_LIMITS_UV[cfg]["u"]
+            cmap_m = CMAP_UV
+            mean_ticks = CBAR_TICKS_UV[cfg]["u"]
+            mean_panel_title = "mean eastward velocity u"
+            mean_cbar_label = "u (m s$^{-1}$)"
+            mean_extend = "both"
+        elif mean_field_key == "v":
+            mean_data = v
+            vmin_m, vmax_m = PANEL_LIMITS_UV[cfg]["v"]
+            cmap_m = CMAP_UV
+            mean_ticks = CBAR_TICKS_UV[cfg]["v"]
+            mean_panel_title = "mean northward velocity v"
+            mean_cbar_label = "v (m s$^{-1}$)"
+            mean_extend = "both"
+        else:
+            mean_data = intensity
+            vmin_m, vmax_m = PANEL_LIMITS[cfg]["mean"]
+            cmap_m = CMAP_MEAN
+            mean_ticks = CBAR_TICKS_MEAN[cfg]
+            mean_panel_title = "mean current intensity |v|"
+            mean_cbar_label = "|v| (m s$^{-1}$)"
+            mean_extend = "max"
 
-        out_dir = _direction_words(endpoints)
-        opp_dir = _direction_words(((p2[0], p2[1]), (p1[0], p1[1])))
+        pc_m, geom = _draw_field(
+            ax_mean, template, mean_data, endpoints,
+            cmap=cmap_m, vmin=vmin_m, vmax=vmax_m, max_depth=max_depth,
+            extend=mean_extend)
         ax_mean.set_title(
-            f"({panel_letters[ri * 2]}) {gateway_name} mean current intensity |v|\n"
+            f"({panel_letters[ri * 2]}) {gateway_name} {mean_panel_title}\n"
             f"{endpoint_txt}",
             fontsize=TITLE_FS, linespacing=1.5)
 
-        circle_handle = Line2D(
-            [0], [0], marker="o", color="none",
-            markerfacecolor="none", markeredgecolor="black",
-            markersize=8, linestyle="none")
-        dot_handle = Line2D(
-            [0], [0], marker=".", color="black",
-            markersize=3, linestyle="none")
-        x_handle = Line2D(
-            [0], [0], marker="x", color="black",
-            markersize=6, linestyle="none")
-        ax_mean.legend(
-            [(circle_handle, dot_handle), (circle_handle, x_handle)],
-            [f"out of page ({out_dir})", f"into page ({opp_dir})"],
-            handler_map={tuple: HandlerTuple(ndivide=1, pad=0)},
-            loc="lower left",
-            fontsize=LABEL_FS - 2, framealpha=0.75,
-            handletextpad=0.5, borderpad=0.4)
+        if mean_field_key == "intensity":
+            _overlay_direction_markers(
+                ax_mean, template, u, v, endpoints, geom,
+                shallow_stride=SHALLOW_STRIDE.get(cfg, 1))
+            out_dir = _direction_words(endpoints)
+            opp_dir = _direction_words(((p2[0], p2[1]), (p1[0], p1[1])))
+            circle_handle = Line2D(
+                [0], [0], marker="o", color="none",
+                markerfacecolor="none", markeredgecolor="black",
+                markersize=8, linestyle="none")
+            dot_handle = Line2D(
+                [0], [0], marker=".", color="black",
+                markersize=3, linestyle="none")
+            x_handle = Line2D(
+                [0], [0], marker="x", color="black",
+                markersize=6, linestyle="none")
+            ax_mean.legend(
+                [(circle_handle, dot_handle), (circle_handle, x_handle)],
+                [f"out of page ({out_dir})", f"into page ({opp_dir})"],
+                handler_map={tuple: HandlerTuple(ndivide=1, pad=0)},
+                loc="lower left",
+                fontsize=LABEL_FS - 2, framealpha=0.75,
+                handletextpad=0.5, borderpad=0.4)
 
         if pc_m is not None:
-            cb = fig.colorbar(pc_m, ax=ax_mean, extend="neither",
+            cb_extend = "both" if mean_extend == "both" else "neither"
+            cb = fig.colorbar(pc_m, ax=ax_mean, extend=cb_extend,
                               shrink=0.85, pad=0.02,
-                              ticks=CBAR_TICKS_MEAN[cfg])
-            cb.set_label("|v| (m s$^{-1}$)", fontsize=LABEL_FS)
+                              ticks=mean_ticks)
+            cb.set_label(mean_cbar_label, fontsize=LABEL_FS)
             cb.ax.tick_params(labelsize=LABEL_FS)
             cb.ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
@@ -413,10 +471,28 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--overwrite", action="store_true",
                     help="Re-render and overwrite the existing PNG.")
+    ap.add_argument(
+        "--depth-clip", nargs="*", default=[], metavar="CFG:DEPTH",
+        help=("Per-gateway depth clip in metres, e.g. fram_6p25:1000. "
+              "Can be repeated or space-separated. "
+              "Produces an extra output file with a depth suffix."))
     args = ap.parse_args()
 
-    out_path = BASE_DIR / "plots_common" / "Fram_Barents_velocity_transects.png"
-    build_figure(out_path, args.overwrite)
+    # Parse depth-clip pairs.
+    depth_overrides: dict[str, int] = {}
+    for item in (args.depth_clip or []):
+        cfg_key, _, depth_str = item.partition(":")
+        if not depth_str:
+            ap.error(f"--depth-clip: expected CFG:DEPTH, got '{item}'")
+        depth_overrides[cfg_key.strip()] = int(depth_str)
+
+    # Build suffix from any clipped gateways, e.g. "_fram_6p25_1000m".
+    suffix = "".join(
+        f"_{cfg}_{d}m" for cfg, d in sorted(depth_overrides.items()))
+
+    out_path = (BASE_DIR / "plots_common"
+                / f"Fram_Barents_velocity_transects{suffix}.png")
+    build_figure(out_path, args.overwrite, depth_overrides)
     logger.info("Done.")
 
 

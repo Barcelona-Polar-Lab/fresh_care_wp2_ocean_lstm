@@ -75,7 +75,7 @@ FRAM_DEPTHS = [None, 2000, 1500, 1000]
 
 # Optional explicit x-axis ticks per config (applied to all axes via sharex).
 XAXIS_TICKS = {
-    "barents_6p25": list(range(71, 78)),
+    "barents_6p25": list(range(71, 75)),
 }
 
 

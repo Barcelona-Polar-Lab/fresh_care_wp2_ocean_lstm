@@ -65,7 +65,7 @@ LABEL_FS = 11
 TITLE_FS = 11
 
 XAXIS_TICKS = {
-    "barents_6p25": list(range(71, 78)),
+    "barents_6p25": list(range(71, 75)),
 }
 
 CBAR_LABELS = {

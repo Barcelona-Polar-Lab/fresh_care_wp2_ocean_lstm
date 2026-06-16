@@ -94,15 +94,15 @@ GATEWAYS = {
     "bering_6p25":  ("Bering",  [[-169.7,   66.0333], [-168.0996, 65.685]]),
     "fram_6p25":    ("Fram",    [[-17.5,    79.0],    [11.0,      79.0]]),
     "davis_6p25":   ("Davis",   [[-61.0,    66.0],    [-54.0,     66.0]]),
-    "barents_6p25": ("Barents", [[20.0,     70.0],    [20.0,      78.0]]),
+    "barents_6p25": ("Barents", [[20.0,     70.0],    [20.0,      74.0]]),
 }
 
 # Per-variable colormap + colorbar label (used for both _mean and base names)
 VAR_INFO = {
-    "T_anom_pred": {"cmap": cmc.vik_r,
+    "T_anom_pred": {"cmap": cmc.vik,
                     "pretty": "T Pred. Anom.",
                     "cbar_label": "Temperature Anomaly [°C]"},
-    "S_anom_pred": {"cmap": cmc.vik_r,
+    "S_anom_pred": {"cmap": cmc.vik,
                     "pretty": "S Pred. Anom.",
                     "cbar_label": "Salinity Anomaly"},
     "T_recon":     {"cmap": cmocean.cm.thermal,
@@ -172,13 +172,13 @@ PLOT_LIMITS: dict[str, dict] = {
         "max_depth": 500,
         "vrange": {
             "T_anom_pred": (-0.60,  0.60),
-            "S_anom_pred": (-0.30,  0.10),
+            "S_anom_pred": (-0.10,  0.10),
             "T_recon":     (-1.50,  9.00),
             "S_recon":     (33.90, 35.20),
         },
         "ticks": {
             "T_anom_pred": [-0.60, -0.40, -0.20, 0.00, 0.20, 0.40, 0.60],
-            "S_anom_pred": [-0.30, -0.20, -0.10, 0.00, 0.05, 0.10],
+            "S_anom_pred": [-0.10, -0.05, 0.00, 0.05, 0.10],
             "T_recon":     [-2.0, 0.0, 2.0, 4.0, 6.0, 8.0],
             "S_recon":     [34.0, 34.2, 34.4, 34.6, 34.8, 35.0, 35.2],
         },
@@ -194,6 +194,13 @@ DATE_PLOTS = [
     ("2012-04-16", "20120416"),
     ("2012-07-16", "20120716"),
     ("2012-10-16", "20121016"),
+]
+
+# Mid-month (day-16) dates for every month 2011-2021. The TS_currents_lstm
+# cadence is 3 days starting from day-01, so the 16th always exists.
+MIDMONTH_DATES = [
+    (f"{y:04d}-{m:02d}-16", f"{y:04d}{m:02d}16")
+    for y in range(2011, 2022) for m in range(1, 13)
 ]
 
 FULL_RE = re.compile(r"^mean_(\d{4})_(\d{4})\.nc$")
@@ -427,7 +434,8 @@ def discover_full(stats_dir: Path):
 # ---------------------------------------------------------------------------
 
 def process_config(cfg: str, overwrite: bool,
-                   stages: set[str], include_partial_monthly: bool):
+                   stages: set[str], include_partial_monthly: bool,
+                   date_plots=DATE_PLOTS):
     gateway_name, endpoints = GATEWAYS[cfg]
     limits = PLOT_LIMITS[cfg]
     reconst_dir = BASE_DIR / cfg
@@ -508,7 +516,7 @@ def process_config(cfg: str, overwrite: bool,
 
     # ---- Specific dates ----
     if "dates" in stages:
-        for iso, compact in DATE_PLOTS:
+        for iso, compact in date_plots:
             dpath = dates_dir / f"TS_currents_lstm_{compact}.nc"
             if not dpath.exists():
                 logger.warning(f"  date file missing: {dpath.name}"); continue
@@ -531,15 +539,30 @@ def main():
                     help=f"Which plot stages to run (default: {all_stages})")
     ap.add_argument("--include-partial-monthly", action="store_true",
                     help="Also plot monthly_*_partial.nc files.")
+    ap.add_argument("--midmonth-dates", action="store_true",
+                    help="For the 'dates' stage, render every YYYY-MM-16 in "
+                         "2011-2021 instead of the short DATE_PLOTS list.")
+    ap.add_argument("--midmonth-years", nargs="*", type=int, default=None,
+                    help="Restrict --midmonth-dates to these years (e.g. "
+                         "`--midmonth-years 2016 2017`). Default: all years.")
     ap.add_argument("--overwrite", action="store_true",
                     help="Re-render and overwrite existing PNGs.")
     args = ap.parse_args()
 
     stages = set(args.stages)
+    if args.midmonth_dates:
+        if args.midmonth_years:
+            yrs = set(args.midmonth_years)
+            date_plots = [d for d in MIDMONTH_DATES if int(d[0][:4]) in yrs]
+        else:
+            date_plots = MIDMONTH_DATES
+    else:
+        date_plots = DATE_PLOTS
     for cfg in args.configs:
         if cfg not in GATEWAYS:
             logger.error(f"Unknown config: {cfg}"); continue
-        process_config(cfg, args.overwrite, stages, args.include_partial_monthly)
+        process_config(cfg, args.overwrite, stages,
+                       args.include_partial_monthly, date_plots=date_plots)
     logger.info("Done.")
 
 
