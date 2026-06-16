@@ -25,9 +25,11 @@ fresh_data/
 
 # Plots and outputs
 plots/
+latex/
 *.png
 *.jpg
 *.pdf
+*.tex
 
 # IDEs
 .vscode/
