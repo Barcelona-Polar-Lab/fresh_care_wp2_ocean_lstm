@@ -231,8 +231,8 @@ def main():
                 if w.sum() <= 0:
                     logger.warning(f"  no depth levels within {args.depth_max} m — skip")
                     continue
-                dT3 = np.asarray(ds["T_anom_pred_mean"].values, dtype=float)
-                dS3 = np.asarray(ds["S_anom_pred_mean"].values, dtype=float)
+                dT3 = np.asarray(ds["T_anom_pred_mean"].values, dtype=float).squeeze()
+                dS3 = np.asarray(ds["S_anom_pred_mean"].values, dtype=float).squeeze()
                 dT2 = column_mean_upper(dT3, w)   # (ny, nx)
                 dS2 = column_mean_upper(dS3, w)
             for rid, mask in region_masks.items():
