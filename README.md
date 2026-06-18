@@ -1,6 +1,6 @@
 # Ocean LSTM Profile Reconstruction
 
-[![DOI](https://zenodo.org/badge/1147787607.svg)](https://doi.org/10.5281/zenodo.20744924)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20744924-blue)](https://doi.org/10.5281/zenodo.20744924)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 PyTorch implementation of a stacked Long Short-Term Memory (LSTM) neural network with Monte Carlo Dropout (MCDO) for reconstructing complete Arctic ocean hydrographic profiles (temperature, salinity, and steric height) from combined satellite surface observations and sparse in-situ measurements.
@@ -13,7 +13,7 @@ Developed within the **FRESH-CARE** project (WP2) at the Institut de Ciències d
 - **Variable-Length Sequence Support**: Handles profiles with NaN tails (varying ocean floor depths) via dynamic padding and masking
 - **EASE-grid Arctic Reconstruction**: Full pipeline to reconstruct 3D Arctic T/S/SH fields on an EASE2 grid
 - **Early Stopping on MC-Dev Loss**: Patience-based stopping evaluated on MC dropout dev loss for robust convergence
-- **Comprehensive Output**: Climatology, anomalies, full profiles, RMSE statistics, and geostrophic currents
+- **Comprehensive Output**: reanalysis baseline, anomalies, full profiles, RMSE statistics, and geostrophic currents
 - **GPU Acceleration**: Automatic CUDA detection and utilization when available
 
 ## Repository Structure
@@ -111,7 +111,7 @@ bash run_reconstruction.sh
 
 Edit the `Config` class in `2_lstm_train_test/lstm_pytorch_pd_mcdo.py` to customize:
 
-- **Input variables**: SST, SSS, ADT anomalies, spatial coordinates, seasonal cycle
+- **Input variables**: SST, SSS and ADT anomalies, spatial coordinates, seasonal cycle
 - **Model architecture**: LSTM units, dropout rate
 - **Training parameters**: Batch size, learning rate, max epochs
 - **Early stopping**: Patience evaluations, MC-dev evaluation frequency, minimum delta
@@ -123,11 +123,9 @@ Expected NetCDF files with dimensions `(profile, depth)` containing:
 
 - `TEMP`, `PSAL`, `SH`: In-situ measurements
 - `SST`, `SSS`, `ADT`: Satellite surface observations
-- `T_glorys`, `S_glorys`, `SH_glorys`: GLORYS12 climatology
+- `T_glorys`, `S_glorys`, `SH_glorys`: GLORYS12 reanalysis
 - `LATITUDE`, `LONGITUDE`, `X_EASE`, `Y_EASE`: Spatial coordinates
 - `day_of_year`, `TIME`: Temporal information
-
-Pre-processed datasets are provided in `data_for_lstm/`.
 
 ## Output
 
@@ -138,7 +136,6 @@ Training produces:
 Testing produces:
 - `model_LSTM_X_Y/mc_test_results.nc`: NetCDF with climatology, anomalies, full reconstructed profiles, MC uncertainty, and RMSE statistics
 
-The pre-trained winner model (`LSTM [52, 46]`, bs=16, lr=2e-4) and its test results are included in `AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/`.
 
 ## Model Architecture
 
