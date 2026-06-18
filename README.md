@@ -1,6 +1,6 @@
 # Ocean LSTM Profile Reconstruction
 
-[![DOI]()()
+[![DOI](https://zenodo.org/badge/1147787607.svg)](https://doi.org/10.5281/zenodo.20744924)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 PyTorch implementation of a stacked Long Short-Term Memory (LSTM) neural network with Monte Carlo Dropout (MCDO) for reconstructing complete Arctic ocean hydrographic profiles (temperature, salinity, and steric height) from combined satellite surface observations and sparse in-situ measurements.
@@ -154,9 +154,8 @@ Input → Dropout → LSTM[0] → ... → LSTM[N] → Dropout → Linear → Out
 
 If you use this code or data, please cite:
 
-> Pelletier, N. W., & Buongiorno Nardelli, B. (2026). *Ocean LSTM Profile Reconstruction* (WP2, FRESH-CARE). Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
+> Pelletier, N. W., & Buongiorno Nardelli, B. (2026). *Ocean LSTM Profile Reconstruction* (WP2, FRESH-CARE). Zenodo. https://doi.org/10.5281/zenodo.20744924
 
-*(DOI will be updated upon Zenodo release.)*
 
 ## Authors
 
@@ -165,7 +164,7 @@ Bruno Buongiorno Nardelli
 Consiglio Nazionale delle Ricerche — Istituto di Scienze Marine, Napoli, Italia
 
 **PyTorch translation, MCDO, refactoring, and Arctic reconstruction pipeline:**  
-Nicolas Werner Pelletier  
+Nicolas Werner Pelletier
 Institut de Ciències del Mar (ICM-CSIC), Barcelona, España
 
 ## License
