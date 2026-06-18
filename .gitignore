@@ -8,24 +8,49 @@ __pycache__/
 dist/
 build/
 
+# Scripts not included in release
+addEASE.py
+toy_example_bilinear_interp.py
+toy_example_ease_to_latlon.py
+
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+# Include specific notebooks
+!1_JN_data_prep/JN_A1_surface_ADT_glorys.ipynb
+!1_JN_data_prep/JN_A2_surface_satSSS_satSST.ipynb
+!1_JN_data_prep/JN_B1_glorys_profs.ipynb
+!1_JN_data_prep/JN_B2_glorys_monthly_profs.ipynb
+!1_JN_data_prep/JN_B3_bathymetry.ipynb
+!1_JN_data_prep/JN_B4_ice_conc.ipynb
+!1_JN_data_prep/JN_C_split_var_depth.ipynb
+!3_JN_plot_test_results/JN_plot_test_res_regions.ipynb
+!3_JN_plot_test_results/JN_plot_test_results.ipynb
+!4_arctic_reconst_ease/JN_grid_explorer.ipynb
+!6_plot_reconst_results/JN_glorys_plots.ipynb
+!6_plot_reconst_results/JN_plot_reconst_ADH_vel.ipynb
+!6_plot_reconst_results/JN_plot_reconst_maps.ipynb
+!6_plot_reconst_results/JN_plot_reconst_trans_gateways.ipynb
 
 # PyTorch models and training outputs
 model_LSTM_*/
 *.pth
 *.pt
+!AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth
 
 # Data files (NetCDF, etc.)
 fresh_data/
+temp_files/
 *.nc
 *.nc4
 *.hdf5
+!data_for_lstm/*.nc
+!AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/mc_test_results.nc
 
 # Plots and outputs
 plots/
 latex/
+old/
 *.png
 *.jpg
 *.pdf
