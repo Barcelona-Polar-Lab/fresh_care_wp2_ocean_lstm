@@ -36,16 +36,14 @@ toy_example_ease_to_latlon.py
 model_LSTM_*/
 *.pth
 *.pt
-!AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/model.pth
 
 # Data files (NetCDF, etc.)
 fresh_data/
 temp_files/
+data_for_lstm/
 *.nc
 *.nc4
 *.hdf5
-!data_for_lstm/*.nc
-!AA_winner_model_LSTM_52_46_bs16_lr2e-4_pat6x5_do0.2/mc_test_results.nc
 
 # Plots and outputs
 plots/
