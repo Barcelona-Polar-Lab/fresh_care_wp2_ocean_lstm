@@ -12,6 +12,7 @@ build/
 addEASE.py
 toy_example_bilinear_interp.py
 toy_example_ease_to_latlon.py
+compression_test.py
 
 # Jupyter Notebook
 .ipynb_checkpoints
