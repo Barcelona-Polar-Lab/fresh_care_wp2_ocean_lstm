@@ -57,6 +57,7 @@ old/
 # IDEs
 .vscode/
 .idea/
+.copilot-instructions.md
 *.swp
 *.swo
 *~
