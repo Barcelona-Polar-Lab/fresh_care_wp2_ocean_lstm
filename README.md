@@ -1,6 +1,6 @@
 # Ocean LSTM Profile Reconstruction
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI]()()
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 PyTorch implementation of a stacked Long Short-Term Memory (LSTM) neural network with Monte Carlo Dropout (MCDO) for reconstructing complete Arctic ocean hydrographic profiles (temperature, salinity, and steric height) from combined satellite surface observations and sparse in-situ measurements.
