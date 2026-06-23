@@ -43,6 +43,7 @@ import numpy as np
 import xarray as xr
 from cmcrameri import cm as cmc
 from matplotlib.ticker import FormatStrFormatter, FuncFormatter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.interpolate import griddata
 from scipy.spatial.distance import cdist
 
@@ -117,8 +118,8 @@ SHALLOW_STRIDE = {
 }
 
 # Font sizes (~15% smaller than the global default).
-LABEL_FS = 11
-TITLE_FS = 11
+LABEL_FS = 12
+TITLE_FS = 13
 
 # Subsampling for the in/out direction markers (every Nth in x and depth).
 MARKER_STRIDE_X = 3
@@ -316,15 +317,23 @@ def build_figure(out_path: Path, overwrite: bool,
     if depth_overrides is None:
         depth_overrides = {}
 
-    fig, axes = plt.subplots(len(ROWS), 2, figsize=(13, 9.5),
+    fig, axes = plt.subplots(len(ROWS), 2, figsize=(13, 10),
                              sharey="row")
-    fig.subplots_adjust(left=0.08, right=0.93, top=0.88, bottom=0.10,
-                        hspace=0.35, wspace=0.2)
+    fig.subplots_adjust(left=0.08, right=0.93, top=0.85, bottom=0.10,
+                        hspace=0.27, wspace=0.36)
 
     panel_letters = ["a", "b", "c", "d"]
 
     from matplotlib.lines import Line2D
     from matplotlib.legend_handler import HandlerTuple
+
+    _ep_lines = []
+    for _c in ROWS:
+        _gn, _ep = GATEWAYS[_c]
+        _p1, _p2 = _ep
+        _ep_lines.append(f"{_gn}: [{_p1[0]:.2f}°, {_p1[1]:.2f}°] → "
+                         f"[{_p2[0]:.2f}°, {_p2[1]:.2f}°]")
+    _endpoint_txt_global = " | ".join(_ep_lines)
 
     for ri, cfg in enumerate(ROWS):
         gateway_name, endpoints = GATEWAYS[cfg]
@@ -384,9 +393,8 @@ def build_figure(out_path: Path, overwrite: bool,
             cmap=cmap_m, vmin=vmin_m, vmax=vmax_m, max_depth=max_depth,
             extend=mean_extend)
         ax_mean.set_title(
-            f"({panel_letters[ri * 2]}) {gateway_name} {mean_panel_title}\n"
-            f"{endpoint_txt}",
-            fontsize=TITLE_FS, linespacing=1.5)
+            f"({panel_letters[ri * 2]}) {gateway_name} {mean_panel_title}",
+            fontsize=TITLE_FS, fontweight='bold', pad=8)
 
         if mean_field_key == "intensity":
             _overlay_direction_markers(
@@ -414,8 +422,9 @@ def build_figure(out_path: Path, overwrite: bool,
 
         if pc_m is not None:
             cb_extend = "both" if mean_extend == "both" else "neither"
-            cb = fig.colorbar(pc_m, ax=ax_mean, extend=cb_extend,
-                              shrink=0.85, pad=0.02,
+            _div_m = make_axes_locatable(ax_mean)
+            _cax_m = _div_m.append_axes("right", size="5%", pad=0.08)
+            cb = fig.colorbar(pc_m, cax=_cax_m, extend=cb_extend,
                               ticks=mean_ticks)
             cb.set_label(mean_cbar_label, fontsize=LABEL_FS)
             cb.ax.tick_params(labelsize=LABEL_FS)
@@ -429,11 +438,12 @@ def build_figure(out_path: Path, overwrite: bool,
             cmap=CMAP_STD, vmin=vmin_s, vmax=vmax_s, max_depth=max_depth)
         ax_std.set_title(
             f"({panel_letters[ri * 2 + 1]}) {gateway_name} "
-            f"Velocity Standard Deviation σ\n{endpoint_txt}",
-            fontsize=TITLE_FS, linespacing=1.5)
+            f"Velocity Standard Deviation σ",
+            fontsize=TITLE_FS, fontweight='bold', pad=8)
         if pc_s is not None:
-            cb = fig.colorbar(pc_s, ax=ax_std, extend="neither",
-                              shrink=0.85, pad=0.02,
+            _div_s = make_axes_locatable(ax_std)
+            _cax_s = _div_s.append_axes("right", size="5%", pad=0.08)
+            cb = fig.colorbar(pc_s, cax=_cax_s, extend="neither",
                               ticks=CBAR_TICKS_STD[cfg])
             cb.set_label("σ (m s$^{-1}$)",
                          fontsize=LABEL_FS)
@@ -458,7 +468,7 @@ def build_figure(out_path: Path, overwrite: bool,
         logger.info(f"[{cfg}] done")
 
     fig.suptitle("Gateway transects — 2011–2021 mean "
-                 "Geostrophic Velocity & Variability",
+                 f"Geostrophic Velocity & Variability\n{_endpoint_txt_global}",
                  y=0.96)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

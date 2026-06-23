@@ -43,6 +43,7 @@ import numpy as np
 import xarray as xr
 from cmcrameri import cm as cmc
 from matplotlib.ticker import FormatStrFormatter, FuncFormatter, MaxNLocator
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.interpolate import griddata
 from scipy.spatial.distance import cdist
 
@@ -61,18 +62,18 @@ CMAP_T_MEAN = cmocean.cm.thermal
 CMAP_S_MEAN = cmocean.cm.haline
 CMAP_STD = cmc.lajolla_r
 
-LABEL_FS = 11
-TITLE_FS = 11
+LABEL_FS = 12
+TITLE_FS = 13
 
 XAXIS_TICKS = {
     "barents_6p25": list(range(71, 75)),
 }
 
 CBAR_LABELS = {
-    "T_recon_mean": r"$\mathrm{T}$ (°C)",
-    "T_recon_std":  r"$\mathrm{\sigma_{T}}$ (°C)",
-    "S_recon_mean": r"$\mathrm{S}$",
-    "S_recon_std":  r"$\mathrm{\sigma_{S}}$",
+    "T_recon_mean": "Temperature (°C)",
+    "T_recon_std":  r"Temperature $\sigma$ (°C)",
+    "S_recon_mean": "Salinity",
+    "S_recon_std":  r"Salinity $\sigma$",
 }
 
 # Target number of colorbar tick labels per panel.
@@ -85,7 +86,9 @@ OVERRIDES = {
                           "ticks": [-2, -1, 0, 1, 2, 3, 4]},
     },
     "barents_6p25": {
-        "T_recon_mean": {"ticks": [1, 2, 3, 4, 5, 6, 7]},
+        "T_recon_mean": {
+            "vmin": 2.5,
+            "ticks": [3, 4, 5, 6, 7]},
     },
 }
 
@@ -250,9 +253,9 @@ def build_figure(cfg: str, overwrite: bool, max_depth_override=None):
         if "ticks" in ov:
             tick_overrides[key] = list(ov["ticks"])
 
-    fig, axes = plt.subplots(2, 2, figsize=(13, 9.5), sharey="row")
-    fig.subplots_adjust(left=0.08, right=0.93, top=0.88, bottom=0.10,
-                        hspace=0.35, wspace=0.2)
+    fig, axes = plt.subplots(2, 2, figsize=(13, 10), sharey="row")
+    fig.subplots_adjust(left=0.08, right=0.93, top=0.85, bottom=0.10,
+                        hspace=0.27, wspace=0.36)
 
     (p1, p2) = endpoints
     endpoint_txt = (
@@ -284,12 +287,13 @@ def build_figure(cfg: str, overwrite: bool, max_depth_override=None):
                            max_depth=max_depth, extend=extend)
 
         ax.set_title(
-            f"({panel_letters[idx]}) {panel_titles[key]}\n{endpoint_txt}",
-            fontsize=TITLE_FS, linespacing=1.5)
+            f"({panel_letters[idx]}) {panel_titles[key]}",
+            fontsize=TITLE_FS, fontweight='bold', pad=8)
 
         if pc is not None:
-            cb = fig.colorbar(pc, ax=ax, extend=extend,
-                              shrink=0.85, pad=0.02)
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.08)
+            cb = fig.colorbar(pc, cax=cax, extend=extend)
             cb.set_label(CBAR_LABELS[key], fontsize=LABEL_FS)
             cb.ax.tick_params(labelsize=LABEL_FS)
             if key in tick_overrides:
@@ -301,7 +305,7 @@ def build_figure(cfg: str, overwrite: bool, max_depth_override=None):
                 ticks = [t for t in ticks
                          if vmin - 1e-9 <= t <= vmax + 1e-9]
             cb.set_ticks(ticks)
-            cb.ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+            cb.ax.yaxis.set_major_formatter(FormatStrFormatter("%.1f"))
 
     deg_fmt = FuncFormatter(lambda x, _: f"{x:g}°")
     abs_fmt = FuncFormatter(lambda y, _: f"{abs(y):g}")
@@ -316,7 +320,7 @@ def build_figure(cfg: str, overwrite: bool, max_depth_override=None):
             ax.set_xticks(xticks)
 
     fig.suptitle(f"{gateway_name} Transect — 2011–2021 mean & std of "
-                 "reconstructed Temperature and Salinity",
+                 f"reconstructed Temperature and Salinity\n{endpoint_txt}",
                  y=0.96)
 
     out_dir.mkdir(parents=True, exist_ok=True)

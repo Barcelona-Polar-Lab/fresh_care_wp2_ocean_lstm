@@ -267,7 +267,8 @@ def make_gateway_figure(cfg: str, overwrite: bool,
             if ci == len(ANOM_VARS) - 1:
                 ax.yaxis.set_label_position("right")
                 ax.set_ylabel(SEASON_LABEL[season],
-                              rotation=270, labelpad=20)
+                              rotation=270, labelpad=20,
+                              fontsize=mpl.rcParams["font.size"] + 1)
             logger.info(f"  [{used:7s}] {var_key} {season}")
 
     # X-axis on TOP margin only, with degree-suffixed tick labels.
@@ -283,7 +284,8 @@ def make_gateway_figure(cfg: str, overwrite: bool,
         ax.xaxis.set_major_formatter(deg_fmt)
         ax.xaxis.set_label_position("top")
         if xlabel_seen is not None:
-            ax.set_xlabel(xlabel_seen.split(" [")[0])
+            ax.set_xlabel(xlabel_seen.split(" [")[0],
+                          fontsize=mpl.rcParams["font.size"] + 1)
 
     # Show depth tick labels as positive numbers (axis values are negative).
     abs_fmt = FuncFormatter(lambda y, _: f"{abs(y):g}")
@@ -307,7 +309,7 @@ def make_gateway_figure(cfg: str, overwrite: bool,
         cax = fig.add_axes([bbox.x0, 0.08, bbox.width, 0.018])
         cbar = fig.colorbar(mappables[var_key], cax=cax,
                             orientation="horizontal", extend="both")
-        cbar.set_label(CBAR_LABEL[var_key])
+        cbar.set_label(CBAR_LABEL[var_key], fontsize=mpl.rcParams["font.size"] + 2)
         cfg_ticks = CBAR_TICKS.get(cfg)
         if cfg_ticks is None:
             ticks = limits.get("ticks", {}).get(var_key)
