@@ -131,7 +131,7 @@ def regrid_profiles_to_grid(y_mean, y_std,
     Returns dict of 3-D arrays keyed by variable name.
     """
     def _empty():
-        return np.full((n_depths, n_y, n_x), np.nan, dtype=np.float32)
+        return np.full((n_depths, n_y, n_x), np.nan, dtype=np.float64)
 
     grids = {
         'T_anom_pred': _empty(), 'S_anom_pred': _empty(),

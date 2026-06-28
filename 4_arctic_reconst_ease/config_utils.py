@@ -41,6 +41,7 @@ TIME_ENCODING = {
     'units': 'days since 1950-01-01T00:00:00+00:00',
     'calendar': 'standard',
     'dtype': 'float64',
+    '_FillValue': None,
 }
 
 # Names of satellite variables inside the EASE-regridded intermediate files.
@@ -205,19 +206,37 @@ def build_global_attrs(cfg, title, source, extra=None):
 
     now_iso = _dt.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
+    # Expand short license tags to the full statement. The dataset is
+    # released under CC-BY-4.0; if a YAML provides a different license
+    # string, it is passed through unchanged.
+    _LICENSE_FULL = (
+        'This dataset is released under the Creative Commons '
+        'Attribution 4.0 International License (CC-BY-4.0). '
+        'See https://creativecommons.org/licenses/by/4.0/ for details. '
+        "Please cite the dataset (see 'references' / 'doi') when used."
+    )
+    license_str = md.get('license') or ''
+    if not license_str.strip() or license_str.strip().upper() in (
+        'CC-BY-4.0', 'CC BY 4.0', 'CCBY4.0', 'CC-BY 4.0',
+    ):
+        license_str = _LICENSE_FULL
+
     attrs = {
         'title': title,
         'summary': title,
-        'Conventions': 'CF-1.8, ACDD-1.3',
+        'Conventions': 'CF-1.8',
         'source': source,
-        'history': f'{now_iso}: file created',
+        'history': (
+            f"{now_iso}: dataset created by the buongiorno_to_pytorch_padding "
+            f"pipeline (see 'source' and 'creator_*' for details)."
+        ),
         'creation_date': now_iso,
         'institution': md.get('institution', ''),
         'creator_name': md.get('authors', ''),
         'creator_email': md.get('contact', ''),
         'project': md.get('project', ''),
         'references': md.get('references', ''),
-        'license': md.get('license', ''),
+        'license': license_str,
         'product_version': md.get('version', ''),
         'region': md.get('region', ''),
         'comment': md.get('comment', ''),
@@ -909,65 +928,169 @@ def get_anomalies_file(cfg, target_date):
 # NetCDF ENCODING (int16 quantization + zlib compression)
 # ============================================================================
 
+# Fixed per-variable packing ranges (vmin, vmax) used by build_var_encoding.
+# Every entry produces a deterministic int16 encoding:
+#     scale_factor = (vmax - vmin) / 65534
+#     add_offset   = (vmax + vmin) / 2
+#     _FillValue   = -32768   (int16 min, reserved for NaN/masked)
+# Ranges chosen with a comfortable safety margin around observed extremes
+# across all 6 published regions (see CF_COMPLIANCE_CHANGES.txt §6.2).
+PACKING_SPEC = {
+    # 6 LSTM / reconstruction outputs
+    'T_anom_pred':  (-10.0,  10.0),
+    'S_anom_pred':  (-10.0,  10.0),
+    'T_anom_std':   (  0.0,   5.0),
+    'S_anom_std':   (  0.0,   5.0),
+    'T_recon':      ( -5.0,  40.0),
+    'S_recon':      (  0.0,  42.0),
+    # 8 carry-through fields (GLORYS reference, geostrophic currents, bathymetry)
+    'T_glorys':     ( -5.0,  40.0),
+    'S_glorys':     (  0.0,  45.0),
+    'ADH':          ( -4.0,   2.0),
+    'vel_gos_x':    ( -3.0,   3.0),
+    'vel_gos_y':    ( -3.0,   3.0),
+    'u_gos':        ( -3.0,   3.0),
+    'v_gos':        ( -3.0,   3.0),
+    'elevation':    (-6000.0, 5000.0),
+}
+
+_FILL_I16 = np.iinfo(np.int16).min  # -32768
+
+
+def _pack16_encoding(vmin, vmax, chunks):
+    """Build a deterministic int16 encoding dict for a fixed (vmin, vmax)."""
+    sf = (vmax - vmin) / 65534.0
+    ao = (vmax + vmin) / 2.0
+    return {
+        'dtype': 'int16',
+        'scale_factor': sf,
+        'add_offset': ao,
+        '_FillValue': _FILL_I16,
+        'zlib': True, 'complevel': 4, 'shuffle': True,
+        'chunksizes': chunks,
+    }
+
+
 def build_var_encoding(ds, chunk_t=1, chunk_d=17, chunk_xy=50):
     """
-    Build per-variable NetCDF encoding with int16 quantization for float32
-    variables and zlib=4 compression for everything else.
+    Build per-variable NetCDF encoding from the explicit PACKING_SPEC.
 
-    float32 → int16 mapping:
-        scale_factor = (vmax - vmin) / 65534
-        add_offset   = vmin + scale_factor * 32767
-        _FillValue   = -32768  (int16 min, reserved for NaN/masked)
-
-    Quantization error ≤ scale_factor / 2, well below observational
-    uncertainty for all oceanographic fields here.
+    Variables listed in PACKING_SPEC get a fixed-range int16 encoding
+    (scale_factor = (vmax-vmin)/65534, add_offset = (vmax+vmin)/2,
+    _FillValue = -32768). All other float variables get float64 with
+    zlib=4 compression. Integer / scalar variables get type-appropriate
+    encoding. Coordinate variables (time, depth, x_ease, y_ease,
+    latitude, longitude) are written with _FillValue = None per CF §2.5.1.
     """
     encoding = {}
-    for v in ds.data_vars:
-        da = ds[v]
-        if v == 'ease_grid_mapping':
-            encoding[v] = {'zlib': False}
-            continue
 
-        ndim = da.ndim
-        if ndim == 4:
+    def _xy_chunks(da):
+        if da.ndim == 4:
             chunks = (chunk_t, chunk_d, chunk_xy, chunk_xy)
-        elif ndim == 3:
+        elif da.ndim == 3:
             chunks = (chunk_t, chunk_xy, chunk_xy)
-        elif ndim == 2:
+        elif da.ndim == 2:
             chunks = (chunk_xy, chunk_xy)
         else:
+            return None
+        # Clamp chunk sizes to actual dim sizes — netCDF4 rejects
+        # chunks larger than the dim (e.g. small regional grids).
+        return tuple(min(c, s) for c, s in zip(chunks, da.shape))
+
+    # --- Data variables ---
+    for v in ds.data_vars:
+        da = ds[v]
+
+        # Special-case scalar grid_mapping carrier
+        if v == 'ease_grid_mapping':
+            encoding[v] = {'dtype': 'int32', 'zlib': False}
+            continue
+
+        # Flag variable: int8 ocean_mask
+        if v == 'ocean_mask':
+            chunks = _xy_chunks(da)
+            enc = {'dtype': 'int8', 'zlib': True,
+                   'complevel': 4, 'shuffle': True}
+            if chunks is not None:
+                enc['chunksizes'] = chunks
+            encoding[v] = enc
+            continue
+
+        # DOY: int32 small 1-D
+        if v == 'DOY':
+            encoding[v] = {'dtype': 'int32', 'zlib': False}
+            continue
+
+        chunks = _xy_chunks(da)
+        if chunks is None:
             encoding[v] = {'zlib': False}
             continue
 
-        # Clamp chunk sizes to the actual dimension sizes — netCDF4 rejects
-        # chunks larger than the dim (e.g. small regional grids like 56×32).
-        chunks = tuple(min(c, s) for c, s in zip(chunks, da.shape))
-
-        base = {'zlib': True, 'complevel': 4, 'shuffle': True,
-                'chunksizes': chunks}
-
-        if da.dtype == np.float32:
-            arr = da.values
-            vmin = float(np.nanmin(arr))
-            vmax = float(np.nanmax(arr))
-            if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
-                sf = (vmax - vmin) / 65534.0
-                offset = vmin + sf * 32767.0
-                base.update({
-                    'dtype': 'int16',
-                    'scale_factor': sf,
-                    'add_offset': offset,
-                    '_FillValue': np.iinfo(np.int16).min,
-                })
-            else:
-                base['dtype'] = 'float32'
+        if v in PACKING_SPEC:
+            vmin, vmax = PACKING_SPEC[v]
+            encoding[v] = _pack16_encoding(vmin, vmax, chunks)
         else:
-            base['dtype'] = str(da.dtype)
+            # Float vars not in PACKING_SPEC: keep float64 with compression.
+            # NaN remains the implicit _FillValue (xarray default).
+            encoding[v] = {
+                'dtype': 'float64',
+                'zlib': True, 'complevel': 4, 'shuffle': True,
+                'chunksizes': chunks,
+            }
 
-        encoding[v] = base
+    # --- Coordinate variables: CF §2.5.1 forbids _FillValue on coord vars ---
+    for c in ('time', 'depth', 'y_ease', 'x_ease'):
+        if c in ds.coords or c in ds.data_vars:
+            encoding.setdefault(c, {})
+            encoding[c]['_FillValue'] = None
+
+    # Auxiliary lat/lon coords: float64, no _FillValue (every cell valid).
+    for c in ('latitude', 'longitude'):
+        if c in ds.coords or c in ds.data_vars:
+            encoding.setdefault(c, {})
+            encoding[c].update({
+                'dtype': 'float64',
+                '_FillValue': None,
+                'zlib': True, 'complevel': 4, 'shuffle': True,
+            })
 
     return encoding
+
+
+def print_packing_spec(logger=None):
+    """Pretty-print the active PACKING_SPEC once at pipeline startup.
+
+    For each variable lists the fixed (vmin, vmax) plus the derived
+    scale_factor and add_offset that will be written to every output
+    NetCDF. Useful as a one-shot reproducibility log.
+    """
+    header = '=' * 78
+    lines = [
+        '',
+        header,
+        '  Fixed int16 packing spec (config_utils.PACKING_SPEC)',
+        header,
+        f'  {"variable":<14}  {"vmin":>10}  {"vmax":>10}  '
+        f'{"scale_factor":>13}  {"add_offset":>10}',
+        '-' * 78,
+    ]
+    for v, (vmin, vmax) in PACKING_SPEC.items():
+        sf = (vmax - vmin) / 65534.0
+        ao = (vmax + vmin) / 2.0
+        lines.append(
+            f'  {v:<14}  {vmin:>10.4f}  {vmax:>10.4f}  '
+            f'{sf:>13.6e}  {ao:>10.4f}'
+        )
+    lines.append(
+        f'  {"_FillValue":<14}  {"":>10}  {"":>10}  '
+        f'{_FILL_I16:>13}  {"":>10}    (int16 min)'
+    )
+    lines.append(header)
+    msg = '\n'.join(lines)
+    if logger is not None:
+        logger.info(msg)
+    else:
+        print(msg)
 
 
 def atomic_to_netcdf(ds, out_path, encoding=None, **kwargs):

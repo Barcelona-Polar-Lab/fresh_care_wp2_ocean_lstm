@@ -46,7 +46,7 @@ def compute_SH(T, S, depth, lat2d, lon2d, g=G_GSW):
         CT = gsw.CT_from_pt(SA, pt)
         del pt
         dyn_h = gsw.geo_strf_dyn_height(SA, CT, p3d, p_ref=0, axis=0)
-    return (-dyn_h / g).astype(np.float32)
+    return -dyn_h / g
 
 
 def compute_geos_ease(ADH, dx, dy, f2d, g=G_GSW, f_floor=F_FLOOR):
@@ -57,7 +57,7 @@ def compute_geos_ease(ADH, dx, dy, f2d, g=G_GSW, f_floor=F_FLOOR):
         inv_f = np.where(np.abs(f2d) > f_floor, 1.0 / f2d, np.nan)
         vel_x = -g * inv_f[None, :, :] * dAdy
         vel_y = g * inv_f[None, :, :] * dAdx
-    return vel_x.astype(np.float32), vel_y.astype(np.float32)
+    return vel_x, vel_y
 
 
 def rotate_to_lonlat(vel_x, vel_y, lon2d_deg):
@@ -71,7 +71,7 @@ def rotate_to_lonlat(vel_x, vel_y, lon2d_deg):
     cL, sL = np.cos(L)[None, :, :], np.sin(L)[None, :, :]
     u = cL * vel_x + sL * vel_y
     v = -sL * vel_x + cL * vel_y
-    return u.astype(np.float32), v.astype(np.float32)
+    return u, v
 
 
 def compute_geostrophic_currents(T_recon, S_recon, ADT, depth,
@@ -94,7 +94,7 @@ def compute_geostrophic_currents(T_recon, S_recon, ADT, depth,
     lon2d = np.asarray(lon2d, dtype=np.float64)
 
     SH = compute_SH(T, S, depth, lat2d, lon2d)
-    ADH = (ADT[None, :, :].astype(np.float32) - SH)
+    ADH = (ADT[None, :, :].astype(np.float64) - SH)
 
     dx = float(np.mean(np.diff(np.asarray(x_ease, dtype=np.float64))))
     dy = float(np.mean(np.diff(np.asarray(y_ease, dtype=np.float64))))

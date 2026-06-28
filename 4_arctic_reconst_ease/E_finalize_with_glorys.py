@@ -56,6 +56,7 @@ from config_utils import (
     load_config,
     load_pipeline_plan,
     load_satellite_for_time,
+    print_packing_spec,
     resolve_glorys_mode,
 )
 from glorys_regrid import regrid_glorys_single_timestep
@@ -143,7 +144,10 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     )
 
     # --- Build output dataset (schema MUST match legacy Step D output) ---
-    time_val = np.datetime64(target_date.strftime('%Y-%m-%dT%H:%M:%S'))
+    # Daily product timestamp = NOON UTC of target_date (centroid of the 24-h
+    # window). This matches the convention in the published archive; do not
+    # change to midnight without re-aligning all downstream consumers.
+    time_val = np.datetime64(target_date.strftime('%Y-%m-%dT12:00:00'))
 
     coords = {
         'time':   ('time',   [time_val], {'standard_name': 'time',
@@ -227,7 +231,7 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     # Geostrophic currents (derived from T_recon, S_recon, ADT)
     ds_out['ADH'] = _da(ADH,
         'Absolute dynamic height (ADT - steric height)', 'm',
-        standard_name='sea_water_absolute_dynamic_height')
+        standard_name='geopotential_height')
     ds_out['vel_gos_x'] = _da(vel_gos_x,
         'Geostrophic velocity, EASE-grid x component', 'm s-1')
     ds_out['vel_gos_y'] = _da(vel_gos_y,
@@ -243,10 +247,22 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     ds_out['DOY'] = xr.DataArray([DOY], dims=['time'],
                                  attrs={'long_name': 'Day of year'})
 
-    # Static (copy from static_ds)
-    for vname in ('ocean_mask', 'elevation', 'latitude', 'longitude'):
+    # Static (copy from static_ds). latitude/longitude are promoted to
+    # non-dim coords (not data_vars) so xarray automatically emits
+    # `coordinates = "latitude longitude"` on every (y_ease, x_ease)-
+    # dimensioned data variable, per CF §5.6.
+    for vname in ('ocean_mask', 'elevation'):
         if vname in static_ds:
             ds_out[vname] = static_ds[vname]
+    # CF §3.5: flag_values dtype must match the variable's dtype.
+    if 'ocean_mask' in ds_out and 'flag_values' in ds_out['ocean_mask'].attrs:
+        ds_out['ocean_mask'].attrs['flag_values'] = np.asarray(
+            ds_out['ocean_mask'].attrs['flag_values'], dtype=np.int8)
+    if 'latitude' in static_ds and 'longitude' in static_ds:
+        ds_out = ds_out.assign_coords(
+            latitude=static_ds['latitude'].astype(np.float64),
+            longitude=static_ds['longitude'].astype(np.float64),
+        )
 
     ds_out['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
@@ -321,6 +337,7 @@ def main():
     logger.info(f"  Output dir: {out_dir}")
     logger.info(f"  Dates: {len(dates)}  ({'overwrite' if overwrite else 'skip-existing'})")
     logger.info("=" * 60)
+    print_packing_spec(logger)
 
     ok = errors = skipped = 0
     failed_dates = []

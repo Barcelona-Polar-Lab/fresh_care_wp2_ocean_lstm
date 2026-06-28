@@ -184,7 +184,7 @@ def interpolate_gebco(gebco_path, x_ease, y_ease):
 
     tgt_x2d, tgt_y2d = np.meshgrid(x_ease, y_ease)
     pts = np.column_stack([tgt_y2d.ravel(), tgt_x2d.ravel()])
-    elev = interp(pts).reshape(len(y_ease), len(x_ease)).astype(np.float32)
+    elev = interp(pts).reshape(len(y_ease), len(x_ease))
     print(f"Bathymetry interpolation done — "
           f"range [{np.nanmin(elev):.0f}, {np.nanmax(elev):.0f}] m")
     return elev
@@ -251,7 +251,7 @@ def create_static_dataset(cfg):
             'ocean_mask': (['y_ease', 'x_ease'], ocean_mask, {
                 'standard_name': 'sea_binary_mask',
                 'long_name': 'Ocean mask',
-                'flag_values': np.array([0, 1], dtype=np.uint8),
+                'flag_values': np.array([0, 1], dtype=np.int8),
                 'flag_meanings': 'land ocean',
                 'grid_mapping': 'ease_grid_mapping',
                 **({'comment': 'Restricted to the configured lat/lon domain '
@@ -266,13 +266,13 @@ def create_static_dataset(cfg):
                 'source': f'Interpolated from 1 km GEBCO to {label}',
                 'grid_mapping': 'ease_grid_mapping',
             }),
-            'latitude': (['y_ease', 'x_ease'], lat_2d.astype(np.float32), {
+            'latitude': (['y_ease', 'x_ease'], lat_2d.astype(np.float64), {
                 'standard_name': 'latitude',
                 'long_name': 'Latitude',
                 'units': 'degrees_north',
                 'grid_mapping': 'ease_grid_mapping',
             }),
-            'longitude': (['y_ease', 'x_ease'], lon_2d.astype(np.float32), {
+            'longitude': (['y_ease', 'x_ease'], lon_2d.astype(np.float64), {
                 'standard_name': 'longitude',
                 'long_name': 'Longitude',
                 'units': 'degrees_east',

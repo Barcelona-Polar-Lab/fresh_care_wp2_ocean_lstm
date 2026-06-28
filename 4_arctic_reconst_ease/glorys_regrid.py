@@ -56,7 +56,7 @@ def _interpolate_3d(data_3d, depth_orig, lat_orig, lon_orig,
             method='linear', bounds_error=False, fill_value=fill_value,
         )
         n_d, n_y, n_x = len(depth_target), len(y_ease), len(x_ease)
-        out = np.full((n_d, n_y, n_x), fill_value, dtype=np.float32)
+        out = np.full((n_d, n_y, n_x), fill_value, dtype=np.float64)
 
         for di, dv in enumerate(depth_target):
             if dv > max_d:
@@ -68,7 +68,7 @@ def _interpolate_3d(data_3d, depth_orig, lat_orig, lon_orig,
     except Exception as e:
         logger.warning(f"3-D interpolation failed: {e}")
         out = np.full((len(depth_target), len(y_ease), len(x_ease)),
-                      fill_value, dtype=np.float32)
+                      fill_value, dtype=np.float64)
     return out
 
 
