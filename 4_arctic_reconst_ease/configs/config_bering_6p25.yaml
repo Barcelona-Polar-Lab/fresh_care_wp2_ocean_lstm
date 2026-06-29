@@ -55,6 +55,7 @@ processing:
 depth_levels: "woa_standard"
 
 metadata:
+  title:       "Deep Learning-Based Four-Dimensional Reconstruction of Temperature, Salinity and Geostrophic Currents in the Bering Sea, 2011–2021, with 3-Day Resolution on EASE-Grid 2.0 at 6.25 km (Version 1)"
   institution: "Institut de Ciències del Mar (ICM-CSIC)"
   authors:     "Nicolas Werner-Pelletier, Aleida Rosquete, Maria Sánchez-Urrea, Julia Crespin, Nina Hoareau, Mario Martin, Marta Umbert"
   contact:     "nicolaswerner@icm.csic.es"

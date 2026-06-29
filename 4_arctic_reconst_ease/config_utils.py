@@ -221,9 +221,15 @@ def build_global_attrs(cfg, title, source, extra=None):
     ):
         license_str = _LICENSE_FULL
 
+    # YAML metadata.title (if set) takes precedence over the title passed in
+    # from the calling pipeline phase. This is how the 6 published-region
+    # configs declare their WDCC-compliant entry names.
+    md_title = (md.get('title') or '').strip()
+    final_title = md_title if md_title else title
+
     attrs = {
-        'title': title,
-        'summary': title,
+        'title': final_title,
+        'summary': final_title,
         'Conventions': 'CF-1.8',
         'source': source,
         'history': (

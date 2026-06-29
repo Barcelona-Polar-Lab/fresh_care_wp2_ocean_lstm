@@ -14,6 +14,7 @@ toy_example_bilinear_interp.py
 toy_example_ease_to_latlon.py
 compression_test.py
 4_arctic_reconst_ease/F_make_cf_compliant.py
+4_arctic_reconst_ease/G_rewrite_archive_titles.py
 
 # Jupyter Notebook
 .ipynb_checkpoints
