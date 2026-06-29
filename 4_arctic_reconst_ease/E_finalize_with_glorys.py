@@ -275,8 +275,9 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
     ds_out.attrs = build_global_attrs(
         cfg,
         title=f'Arctic 4-D ocean reconstruction ({get_resolution_label(cfg)}, {period_label})',
-        source=('LSTM with Monte-Carlo Dropout, trained on Arctic in-situ profiles, '
-                'driven by satellite SST/SSS/ADT and added to GLORYS12 reanalysis reference'),
+        source=('Long-Short Term Memory Neural Network with Monte-Carlo Dropout, '
+                'trained on Arctic in-situ profiles, driven by satellite SST/SSS/ADT '
+                'and added to GLORYS12 reanalysis reference'),
         extra={
             'model_path': str(cfg['paths']['model_path']),
             'glorys_mode': cfg['processing']['glorys_mode'],

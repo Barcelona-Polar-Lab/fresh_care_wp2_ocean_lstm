@@ -100,7 +100,7 @@ metadata:
   institution: "Institut de Ciències del Mar (ICM-CSIC)"
   authors:     "Nicolas Werner-Pelletier, Aleida Rosquete, Maria Sánchez-Urrea, Julia Crespin, Nina Hoareau, Mario Martin, Marta Umbert"
   contact:     "nicolaswerner@icm.csic.es"
-  project:     "FRESH-CARE (ERC Starting Grant)"
+  project:     "FRESH-CARE ERC Starting Grant: Unraveling freshwater and ocean currents changes in the Arctic using remote sensing"
   version:     "1.0"
   region:      "Pan-Arctic (≥ ~60°N)"
   comment:     "Pan-Arctic 3-D temperature/salinity reconstruction at 25 km EASE-2 resolution from satellite SST/SSS/ADT and GLORYS12 reanalysis, using an LSTM with Monte-Carlo Dropout; restricted to the Arctic domain (lat >= 60 deg N)."
