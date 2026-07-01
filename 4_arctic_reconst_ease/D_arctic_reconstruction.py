@@ -256,23 +256,28 @@ def reconstruct_single_date(target_date, cfg, model, norm_params,
                                       'units': 'm', 'axis': 'X'}),
     }
 
-    def _da(arr, long_name, units):
+    def _da(arr, long_name, units, standard_name=None):
+        attrs = {'long_name': long_name, 'units': units,
+                 'grid_mapping': 'ease_grid_mapping'}
+        if standard_name is not None:
+            attrs['standard_name'] = standard_name
         return xr.DataArray(
             arr[np.newaxis],   # add time dim → (1, depth, ny, nx)
             dims=['time', 'depth', 'y_ease', 'x_ease'],
-            attrs={'long_name': long_name, 'units': units,
-                   'grid_mapping': 'ease_grid_mapping'},
+            attrs=attrs,
         )
 
     ds_out = xr.Dataset(coords=coords)
     ds_out['T_anom_pred'] = _da(grids['T_anom_pred'],
-        'Predicted temperature anomaly (LSTM mean)', 'degC')
+        'Predicted temperature anomaly (LSTM mean)', 'degC',
+        standard_name='sea_water_temperature_anomaly')
     ds_out['S_anom_pred'] = _da(grids['S_anom_pred'],
-        'Predicted practical salinity anomaly (LSTM mean)', '1e-3')
+        'sea_water_practical_salinity_anomaly', '1e-3')
     ds_out['T_anom_std'] = _da(grids['T_anom_std'],
-        'MC-Dropout standard deviation of temperature anomaly', 'degC')
+        'MC-Dropout standard deviation of temperature anomaly', 'degC',
+        standard_name='sea_water_temperature_anomaly standard_error')
     ds_out['S_anom_std'] = _da(grids['S_anom_std'],
-        'MC-Dropout standard deviation of salinity anomaly', '1e-3')
+        'sea_water_practical_salinity_anomaly standard_error', '1e-3')
     ds_out['ease_grid_mapping'] = xr.DataArray(data=0, attrs=gm_attrs)
 
     ds_out.attrs = {

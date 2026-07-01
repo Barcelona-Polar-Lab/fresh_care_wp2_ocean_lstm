@@ -233,9 +233,11 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
         'Absolute dynamic height (ADT - steric height)', 'm',
         standard_name='geopotential_height')
     ds_out['vel_gos_x'] = _da(vel_gos_x,
-        'Geostrophic velocity, EASE-grid x component', 'm s-1')
+        'Geostrophic velocity, EASE-grid x component', 'm s-1',
+        standard_name='sea_water_x_velocity')
     ds_out['vel_gos_y'] = _da(vel_gos_y,
-        'Geostrophic velocity, EASE-grid y component', 'm s-1')
+        'Geostrophic velocity, EASE-grid y component', 'm s-1',
+        standard_name='sea_water_y_velocity')
     ds_out['u_gos'] = _da(u_gos,
         'Eastward geostrophic velocity', 'm s-1',
         standard_name='eastward_sea_water_velocity')
@@ -245,7 +247,7 @@ def finalize_single_date(target_date, cfg, static_ds, x_ease, y_ease,
 
     # DOY
     ds_out['DOY'] = xr.DataArray([DOY], dims=['time'],
-                                 attrs={'long_name': 'Day of year'})
+                                 attrs={'long_name': 'Day of year', 'units': '1'})
 
     # Static (copy from static_ds). latitude/longitude are promoted to
     # non-dim coords (not data_vars) so xarray automatically emits

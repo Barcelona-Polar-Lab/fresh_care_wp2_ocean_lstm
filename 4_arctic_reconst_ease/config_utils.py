@@ -238,7 +238,7 @@ def build_global_attrs(cfg, title, source, extra=None):
         ),
         'creation_date': now_iso,
         'institution': md.get('institution', ''),
-        'creator_name': md.get('authors', ''),
+        'creator': md.get('authors', ''),
         'creator_email': md.get('contact', ''),
         'project': md.get('project', ''),
         'references': md.get('references', ''),
@@ -332,6 +332,8 @@ def create_ease_grid(cfg):
         'grid_resolution_meters': res_m,
         'spatial_ref': proj4,
         'proj4_string': proj4,
+        'long_name': 'EASE-Grid 2.0 Lambert Azimuthal Equal Area projection parameters',
+        'units': '1',
     }
 
     return x_ease, y_ease, grid_mapping_attrs
